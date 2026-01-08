@@ -102,7 +102,7 @@ export function useCache() {
   async function getCached<T>(
     store: CacheStore,
     id: string
-  ): Promise<{ data: T; lastSynced: number; isStale: boolean } | null> {
+  ): Promise<{ data: T, lastSynced: number, isStale: boolean } | null> {
     try {
       const database = getDb()
       const item = await database[store].get(id)
@@ -123,7 +123,7 @@ export function useCache() {
   async function getAllCached<T>(
     store: CacheStore,
     filter?: { projectId?: string }
-  ): Promise<{ data: T[]; lastSynced: number; isStale: boolean } | null> {
+  ): Promise<{ data: T[], lastSynced: number, isStale: boolean } | null> {
     try {
       const database = getDb()
       let items
@@ -153,7 +153,7 @@ export function useCache() {
     store: CacheStore,
     id: string,
     data: Record<string, unknown>,
-    extra?: { projectId?: string; keyId?: string; localeCode?: string }
+    extra?: { projectId?: string, keyId?: string, localeCode?: string }
   ): Promise<void> {
     try {
       const database = getDb()
@@ -173,7 +173,7 @@ export function useCache() {
   // Set multiple cached items
   async function setCachedBulk(
     store: CacheStore,
-    items: Array<{ id: string; data: Record<string, unknown>; projectId?: string }>
+    items: Array<{ id: string, data: Record<string, unknown>, projectId?: string }>
   ): Promise<void> {
     try {
       const database = getDb()
@@ -306,4 +306,3 @@ export function useCache() {
     clearProjectCache
   }
 }
-

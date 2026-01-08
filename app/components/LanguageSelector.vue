@@ -52,7 +52,11 @@ function isSelected(code: string) {
 </script>
 
 <template>
-  <UModal v-model:open="isOpen" title="Select Languages" description="Choose the languages you want to work with">
+  <UModal
+    v-model:open="isOpen"
+    title="Select Languages"
+    description="Choose the languages you want to work with"
+  >
     <UButton
       :disabled="!currentProject || locales.length === 0"
       color="neutral"
@@ -70,13 +74,24 @@ function isSelected(code: string) {
     />
 
     <template #body>
-      <div v-if="locales.length === 0" class="text-center py-8 text-muted">
-        <UIcon name="i-lucide-globe" class="size-12 mb-4 opacity-50" />
+      <div
+        v-if="locales.length === 0"
+        class="text-center py-8 text-muted"
+      >
+        <UIcon
+          name="i-lucide-globe"
+          class="size-12 mb-4 opacity-50"
+        />
         <p>No languages available.</p>
-        <p class="text-sm mt-1">Open a project to see available languages.</p>
+        <p class="text-sm mt-1">
+          Open a project to see available languages.
+        </p>
       </div>
 
-      <div v-else class="space-y-3">
+      <div
+        v-else
+        class="space-y-3"
+      >
         <p class="text-sm text-muted mb-4">
           Selected languages will be displayed in the translation editor.
         </p>
@@ -114,14 +129,22 @@ function isSelected(code: string) {
               </p>
               <p class="text-xs text-muted">
                 {{ option.locale.code }}
-                <span v-if="option.locale.default" class="ml-1 text-primary">(default)</span>
+                <span
+                  v-if="option.locale.default"
+                  class="ml-1 text-primary"
+                >(default)</span>
               </p>
             </div>
           </button>
         </div>
 
-        <div v-if="selectedCodes.length > 0" class="pt-3 border-t border-default">
-          <p class="text-xs text-muted mb-2">Selected:</p>
+        <div
+          v-if="selectedCodes.length > 0"
+          class="pt-3 border-t border-default"
+        >
+          <p class="text-xs text-muted mb-2">
+            Selected:
+          </p>
           <div class="flex flex-wrap gap-1.5">
             <UBadge
               v-for="code in selectedCodes"
@@ -136,7 +159,10 @@ function isSelected(code: string) {
                 class="ml-1 hover:text-primary"
                 @click.stop="toggleLocale(code)"
               >
-                <UIcon name="i-lucide-x" class="size-3" />
+                <UIcon
+                  name="i-lucide-x"
+                  class="size-3"
+                />
               </button>
             </UBadge>
           </div>
@@ -161,4 +187,3 @@ function isSelected(code: string) {
     </template>
   </UModal>
 </template>
-
