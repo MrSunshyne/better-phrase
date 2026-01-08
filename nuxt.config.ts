@@ -11,6 +11,15 @@ export default defineNuxtConfig({
     enabled: true
   },
 
+  // favicon favicon.svg
+  app: {
+    head: {
+      link: [
+        { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }
+      ]
+    }
+  },
+
   css: ['~/assets/css/main.css'],
 
   routeRules: {
