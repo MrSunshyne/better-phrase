@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import type { TableColumn } from '@nuxt/ui'
+import type { TableColumn, TableRow } from '@nuxt/ui'
 import type { PhraseProject } from '~/composables/usePhrase'
 
+const router = useRouter()
 const { token, projects, loading, error, isConnected, clearToken, fetchProjects } = usePhrase()
 const toast = useToast()
 
@@ -75,6 +76,10 @@ function handleDisconnect() {
     color: 'neutral',
     icon: 'i-lucide-log-out'
   })
+}
+
+function handleProjectSelect(_event: Event, row: TableRow<PhraseProject>) {
+  router.push(`/projects/${row.original.id}`)
 }
 </script>
 
@@ -166,7 +171,8 @@ function handleDisconnect() {
         :data="projects"
         :columns="columns"
         :loading="loading"
-        class="w-full"
+        class="w-full cursor-pointer"
+        @select="handleProjectSelect"
       >
         <template #empty>
           <div class="flex flex-col items-center justify-center py-8 text-muted">
