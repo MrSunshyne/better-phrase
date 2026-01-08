@@ -11,9 +11,18 @@ export default defineNuxtConfig({
     enabled: true
   },
 
-  // favicon favicon.svg
   app: {
     head: {
+      title: 'Better Phrase',
+      meta: [
+        { name: 'description', content: 'An attempt to better interact with Phrase for developers' },
+        { property: 'og:title', content: 'Better Phrase' },
+        { property: 'og:description', content: 'An attempt to better interact with Phrase for developers' },
+        { property: 'og:image', content: '/og-image.png' },
+        { property: 'og:type', content: 'website' },
+        { name: 'twitter:card', content: 'summary_large_image' },
+        { name: 'twitter:image', content: '/og-image.png' }
+      ],
       link: [
         { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }
       ]
