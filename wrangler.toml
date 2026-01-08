@@ -1,0 +1,8 @@
+name = "better-phrase"
+compatibility_date = "2025-01-09"
+pages_build_output_dir = ".output/public"
+
+# SPA mode - serve index.html for all routes
+[build]
+command = "pnpm run generate"
+
