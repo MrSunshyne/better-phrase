@@ -84,15 +84,30 @@ function handleProjectSelect(_event: Event, row: TableRow<PhraseProject>) {
 </script>
 
 <template>
-  <div class="max-w-4xl mx-auto px-4 py-12">
-    <div class="text-center mb-8">
-      <h1 class="text-3xl font-bold text-highlighted mb-2">
-        Better Phrase
-      </h1>
-      <p class="text-muted">
-        Manage your Phrase projects with ease
-      </p>
+  <div class="px-4 py-2 h-full flex flex-col">
+    <!-- Header -->
+    <div class="max-w-4xl mx-auto w-full flex items-center justify-between mb-4 shrink-0 border-b border-default pb-2">
+      <div class="flex items-center gap-2">
+        <AppLogo class="w-auto h-6" />
+        <span class="font-semibold text-highlighted">Better Phrase</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <LanguageSelector />
+        <UColorModeButton size="xs" />
+        <UButton
+          to="https://github.com/MrSunshyne/better-phrase"
+          target="_blank"
+          icon="i-simple-icons-github"
+          aria-label="GitHub"
+          color="neutral"
+          variant="ghost"
+          size="xs"
+        />
+      </div>
     </div>
+
+    <div class="flex-1 overflow-auto">
+      <div class="max-w-4xl mx-auto">
 
     <!-- Token Input Card -->
     <UCard class="mb-8">
@@ -204,5 +219,7 @@ function handleProjectSelect(_event: Event, row: TableRow<PhraseProject>) {
         </p>
       </div>
     </UCard>
+      </div>
+    </div>
   </div>
 </template>
