@@ -5,6 +5,8 @@ export default defineNuxtConfig({
     '@nuxt/ui'
   ],
 
+  ssr: false,
+
   devtools: {
     enabled: true
   },
