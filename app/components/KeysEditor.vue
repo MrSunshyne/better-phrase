@@ -8,6 +8,9 @@ const props = defineProps<{
   locales: PhraseLocale[]
 }>()
 
+// Search model from parent
+const searchQuery = defineModel<string>('search', { default: '' })
+
 const {
   keys,
   translations,
@@ -20,37 +23,31 @@ const {
 const toast = useToast()
 
 // State
-const searchQuery = ref('')
 const debouncedSearch = ref('')
 const currentPage = ref(1)
-const perPage = 20
+const perPage = 100
 const hasMore = ref(false)
+const totalKeys = ref<number | undefined>(undefined)
 const isLoadingKeys = ref(false)
 const isLoadingTranslations = ref(false)
 
 // Editing state
-const editingCell = ref<{ keyId: string; localeCode: string } | null>(null)
+const editingCell = ref<{ keyId: string, localeCode: string } | null>(null)
 const editingValue = ref('')
 const isSaving = ref(false)
 
-// Debounce search query
-let searchTimeout: ReturnType<typeof setTimeout> | null = null
-watch(searchQuery, (newVal) => {
-  if (searchTimeout) {
-    clearTimeout(searchTimeout)
-  }
-  searchTimeout = setTimeout(() => {
-    debouncedSearch.value = newVal
-  }, 300)
-})
+// Trigger search manually
+function triggerSearch() {
+  debouncedSearch.value = searchQuery.value
+}
 
 // Selected locales as full objects
 const selectedLocaleObjects = computed(() =>
   props.locales.filter(l => props.selectedLocales.includes(l.code))
 )
 
-// Dynamic columns based on selected locales
-const columns = computed<TableColumn<PhraseKey>[]>(() => {
+// Dynamic columns based on selected locales (kept for potential future use)
+const _columns = computed<TableColumn<PhraseKey>[]>(() => {
   const baseColumns: TableColumn<PhraseKey>[] = [
     {
       accessorKey: 'name',
@@ -104,6 +101,7 @@ async function loadKeys(reset = false) {
     })
 
     hasMore.value = result.hasMore
+    totalKeys.value = result.total
 
     // Load translations for the fetched keys
     if (result.keys.length > 0) {
@@ -119,14 +117,19 @@ async function loadKeys(reset = false) {
   }
 }
 
-// Initial load
-onMounted(() => {
-  loadKeys()
-})
+// Track if user has searched
+const hasSearched = ref(false)
 
-// Reload when search changes
-watch(debouncedSearch, () => {
-  loadKeys(true)
+// Reload when search changes (only if there's a query)
+watch(debouncedSearch, (newVal) => {
+  if (newVal) {
+    hasSearched.value = true
+    loadKeys(true)
+  } else if (hasSearched.value) {
+    // Clear results when search is cleared
+    keys.value = []
+    hasSearched.value = false
+  }
 })
 
 // Reload when selected locales change
@@ -232,31 +235,64 @@ function handleKeydown(event: KeyboardEvent) {
 function isEditing(keyId: string, localeCode: string): boolean {
   return editingCell.value?.keyId === keyId && editingCell.value?.localeCode === localeCode
 }
+
+// Copy key(s) to clipboard in add-keys format (only selected languages)
+function formatKeyForCopy(key: PhraseKey): Record<string, Record<string, string>> {
+  const keyTranslations = translations.value.get(key.id) || []
+  const translationObj: Record<string, string> = {}
+
+  for (const t of keyTranslations) {
+    // Only include translations for selected locales
+    if (t.content && props.selectedLocales.includes(t.locale.code)) {
+      translationObj[t.locale.code] = t.content
+    }
+  }
+
+  return { [key.name]: translationObj }
+}
+
+async function copyKey(key: PhraseKey) {
+  const data = formatKeyForCopy(key)
+  await navigator.clipboard.writeText(JSON.stringify(data, null, 2))
+  toast.add({
+    title: 'Copied',
+    description: `Key "${key.name}" copied (${props.selectedLocales.join(', ')})`,
+    color: 'success',
+    icon: 'i-lucide-clipboard-check'
+  })
+}
+
+async function copyAllKeys() {
+  const data: Record<string, Record<string, string>> = {}
+
+  for (const key of keys.value) {
+    const formatted = formatKeyForCopy(key)
+    Object.assign(data, formatted)
+  }
+
+  await navigator.clipboard.writeText(JSON.stringify(data, null, 2))
+  toast.add({
+    title: 'Copied',
+    description: `${keys.value.length} key(s) copied (${props.selectedLocales.join(', ')})`,
+    color: 'success',
+    icon: 'i-lucide-clipboard-check'
+  })
+}
+
+// Expose for parent access
+defineExpose({
+  keys,
+  isLoadingKeys,
+  debouncedSearch,
+  hasSearched,
+  loadKeys,
+  copyAllKeys,
+  triggerSearch
+})
 </script>
 
 <template>
-  <div class="space-y-4">
-    <!-- Search and Controls -->
-    <div class="flex items-center gap-4">
-      <UInput
-        v-model="searchQuery"
-        icon="i-lucide-search"
-        placeholder="Search keys..."
-        class="flex-1 max-w-sm"
-        :disabled="isLoadingKeys"
-      />
-
-      <UButton
-        color="neutral"
-        variant="outline"
-        icon="i-lucide-refresh-cw"
-        :loading="isLoadingKeys"
-        @click="loadKeys(true)"
-      >
-        Refresh
-      </UButton>
-    </div>
-
+  <div class="h-full flex flex-col">
     <!-- No Locales Selected Warning -->
     <UAlert
       v-if="selectedLocales.length === 0"
@@ -267,8 +303,11 @@ function isEditing(keyId: string, localeCode: string): boolean {
     />
 
     <!-- Keys Table -->
-    <div v-else class="border border-default rounded-lg overflow-hidden">
-      <div class="overflow-x-auto">
+    <div
+      v-else
+      class="flex-1 min-h-0 flex flex-col"
+    >
+      <div class="flex-1 min-h-0 overflow-auto">
         <table class="min-w-full divide-y divide-default">
           <thead class="bg-elevated/50">
             <tr>
@@ -289,20 +328,95 @@ function isEditing(keyId: string, localeCode: string): boolean {
           <tbody class="divide-y divide-default">
             <!-- Loading State -->
             <tr v-if="isLoadingKeys && keys.length === 0">
-              <td :colspan="selectedLocales.length + 1" class="px-4 py-8 text-center">
+              <td
+                :colspan="selectedLocales.length + 1"
+                class="px-4 py-8 text-center"
+              >
                 <div class="flex flex-col items-center gap-2 text-muted">
-                  <UIcon name="i-lucide-loader-2" class="size-8 animate-spin" />
+                  <UIcon
+                    name="i-lucide-loader-2"
+                    class="size-8 animate-spin"
+                  />
                   <span>Loading keys...</span>
                 </div>
               </td>
             </tr>
 
-            <!-- Empty State -->
+            <!-- Initial State - No Search Yet -->
+            <tr v-else-if="!hasSearched && keys.length === 0">
+              <td
+                :colspan="selectedLocales.length + 1"
+                class="px-4 py-12 text-center"
+              >
+                <div class="flex flex-col items-center gap-4 text-muted">
+                  <UIcon
+                    name="i-lucide-search"
+                    class="size-12 opacity-50"
+                  />
+                  <div>
+                    <p class="font-medium text-highlighted">
+                      Search to find keys
+                    </p>
+                    <p class="text-sm mb-4">
+                      Enter a search term to find translation keys
+                    </p>
+                    <div class="flex items-center gap-2 justify-center">
+                      <UInput
+                        v-model="searchQuery"
+                        icon="i-lucide-search"
+                        placeholder="Search keys..."
+                        size="md"
+                        class="w-80"
+                        @keydown.enter="triggerSearch"
+                      />
+                      <UButton
+                        icon="i-lucide-search"
+                        :loading="isLoadingKeys"
+                        :disabled="!searchQuery"
+                        @click="triggerSearch"
+                      >
+                        Search
+                      </UButton>
+                    </div>
+                  </div>
+                </div>
+              </td>
+            </tr>
+
+            <!-- Empty Search Results -->
             <tr v-else-if="keys.length === 0">
-              <td :colspan="selectedLocales.length + 1" class="px-4 py-8 text-center">
-                <div class="flex flex-col items-center gap-2 text-muted">
-                  <UIcon name="i-lucide-file-x" class="size-12 opacity-50" />
-                  <span>{{ searchQuery ? 'No keys match your search' : 'No keys found' }}</span>
+              <td
+                :colspan="selectedLocales.length + 1"
+                class="px-4 py-8 text-center"
+              >
+                <div class="flex flex-col items-center gap-4 text-muted">
+                  <UIcon
+                    name="i-lucide-file-x"
+                    class="size-12 opacity-50"
+                  />
+                  <div>
+                    <p class="mb-4">
+                      No keys match your search "{{ debouncedSearch }}"
+                    </p>
+                    <div class="flex items-center gap-2 justify-center">
+                      <UInput
+                        v-model="searchQuery"
+                        icon="i-lucide-search"
+                        placeholder="Try a different search..."
+                        size="md"
+                        class="w-80"
+                        @keydown.enter="triggerSearch"
+                      />
+                      <UButton
+                        icon="i-lucide-search"
+                        :loading="isLoadingKeys"
+                        :disabled="!searchQuery"
+                        @click="triggerSearch"
+                      >
+                        Search
+                      </UButton>
+                    </div>
+                  </div>
                 </div>
               </td>
             </tr>
@@ -315,11 +429,29 @@ function isEditing(keyId: string, localeCode: string): boolean {
             >
               <!-- Key Name -->
               <td class="px-4 py-3">
-                <div class="font-mono text-sm text-highlighted truncate max-w-xs" :title="key.name">
-                  {{ key.name }}
-                </div>
-                <div v-if="key.description" class="text-xs text-muted truncate max-w-xs">
-                  {{ key.description }}
+                <div class="flex items-start gap-2 group/key">
+                  <div class="flex-1 min-w-0">
+                    <div
+                      class="font-mono text-sm text-highlighted truncate"
+                      :title="key.name"
+                    >
+                      {{ key.name }}
+                    </div>
+                    <div
+                      v-if="key.description"
+                      class="text-xs text-muted truncate"
+                    >
+                      {{ key.description }}
+                    </div>
+                  </div>
+                  <UButton
+                    color="neutral"
+                    variant="ghost"
+                    size="xs"
+                    icon="i-lucide-copy"
+                    class="opacity-0 group-hover/key:opacity-100 shrink-0"
+                    @click="copyKey(key)"
+                  />
                 </div>
               </td>
 
@@ -330,7 +462,10 @@ function isEditing(keyId: string, localeCode: string): boolean {
                 class="px-4 py-2 min-w-[250px]"
               >
                 <!-- Editing Mode -->
-                <div v-if="isEditing(key.id, locale.code)" class="space-y-2">
+                <div
+                  v-if="isEditing(key.id, locale.code)"
+                  class="space-y-2"
+                >
                   <UTextarea
                     v-model="editingValue"
                     :rows="2"
@@ -372,7 +507,10 @@ function isEditing(keyId: string, localeCode: string): boolean {
                   >
                     {{ getTranslation(key.id, locale.code)?.content }}
                   </span>
-                  <span v-else class="text-sm text-muted italic">
+                  <span
+                    v-else
+                    class="text-sm text-muted italic"
+                  >
                     Click to add translation...
                   </span>
                   <UIcon
@@ -388,10 +526,17 @@ function isEditing(keyId: string, localeCode: string): boolean {
     </div>
 
     <!-- Pagination -->
-    <div v-if="keys.length > 0" class="flex items-center justify-between">
+    <div
+      v-if="keys.length > 0 && hasSearched"
+      class="flex items-center justify-between"
+    >
       <p class="text-sm text-muted">
-        Showing {{ keys.length }} key{{ keys.length === 1 ? '' : 's' }}
-        <span v-if="searchQuery"> matching "{{ searchQuery }}"</span>
+        <template v-if="totalKeys !== undefined">
+          Showing {{ keys.length }} of {{ totalKeys }} key{{ totalKeys === 1 ? '' : 's' }} matching "{{ debouncedSearch }}"
+        </template>
+        <template v-else>
+          Found {{ keys.length }} key{{ keys.length === 1 ? '' : 's' }} matching "{{ debouncedSearch }}"
+        </template>
       </p>
 
       <div class="flex items-center gap-2">
@@ -406,7 +551,7 @@ function isEditing(keyId: string, localeCode: string): boolean {
           Previous
         </UButton>
         <span class="text-sm text-muted px-2">
-          Page {{ currentPage }}
+          Page {{ currentPage }}<template v-if="totalKeys !== undefined"> of {{ Math.ceil(totalKeys / perPage) }}</template>
         </span>
         <UButton
           color="neutral"
@@ -422,10 +567,15 @@ function isEditing(keyId: string, localeCode: string): boolean {
     </div>
 
     <!-- Loading Translations Indicator -->
-    <div v-if="isLoadingTranslations" class="flex items-center gap-2 text-sm text-muted">
-      <UIcon name="i-lucide-loader-2" class="size-4 animate-spin" />
+    <div
+      v-if="isLoadingTranslations"
+      class="flex items-center gap-2 text-sm text-muted"
+    >
+      <UIcon
+        name="i-lucide-loader-2"
+        class="size-4 animate-spin"
+      />
       <span>Loading translations...</span>
     </div>
   </div>
 </template>
-
