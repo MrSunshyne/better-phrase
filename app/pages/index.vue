@@ -1,76 +1,202 @@
+<script setup lang="ts">
+import type { TableColumn } from '@nuxt/ui'
+import type { PhraseProject } from '~/composables/usePhrase'
+
+const { token, projects, loading, error, isConnected, clearToken, fetchProjects } = usePhrase()
+const toast = useToast()
+
+const showToken = ref(false)
+const inputToken = ref('')
+
+// Initialize inputToken from stored token
+onMounted(() => {
+  if (token.value) {
+    inputToken.value = token.value
+    // Auto-fetch projects if we have a stored token
+    fetchProjects()
+  }
+})
+
+const columns: TableColumn<PhraseProject>[] = [
+  {
+    accessorKey: 'name',
+    header: 'Project Name'
+  },
+  {
+    accessorKey: 'id',
+    header: 'ID'
+  },
+  {
+    accessorKey: 'main_format',
+    header: 'Format'
+  },
+  {
+    accessorKey: 'created_at',
+    header: 'Created',
+    cell: ({ row }) => {
+      return new Date(row.getValue('created_at')).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      })
+    }
+  }
+]
+
+async function handleConnect() {
+  // Update the token in the composable before fetching
+  token.value = inputToken.value
+
+  const success = await fetchProjects()
+
+  if (success) {
+    toast.add({
+      title: 'Connected successfully',
+      description: `Found ${projects.value.length} project(s)`,
+      color: 'success',
+      icon: 'i-lucide-check-circle'
+    })
+  } else if (error.value) {
+    toast.add({
+      title: 'Connection failed',
+      description: error.value,
+      color: 'error',
+      icon: 'i-lucide-x-circle'
+    })
+  }
+}
+
+function handleDisconnect() {
+  clearToken()
+  inputToken.value = ''
+  toast.add({
+    title: 'Disconnected',
+    description: 'Your API token has been cleared',
+    color: 'neutral',
+    icon: 'i-lucide-log-out'
+  })
+}
+</script>
+
 <template>
-  <div>
-    <UPageHero
-      title="Nuxt Starter Template"
-      description="A production-ready starter template powered by Nuxt UI. Build beautiful, accessible, and performant applications in minutes, not hours."
-      :links="[{
-        label: 'Get started',
-        to: 'https://ui.nuxt.com/docs/getting-started/installation/nuxt',
-        target: '_blank',
-        trailingIcon: 'i-lucide-arrow-right',
-        size: 'xl'
-      }, {
-        label: 'Use this template',
-        to: 'https://github.com/nuxt-ui-templates/starter',
-        target: '_blank',
-        icon: 'i-simple-icons-github',
-        size: 'xl',
-        color: 'neutral',
-        variant: 'subtle'
-      }]"
-    />
+  <div class="max-w-4xl mx-auto px-4 py-12">
+    <div class="text-center mb-8">
+      <h1 class="text-3xl font-bold text-highlighted mb-2">
+        Better Phrase
+      </h1>
+      <p class="text-muted">
+        Manage your Phrase projects with ease
+      </p>
+    </div>
 
-    <UPageSection
-      id="features"
-      title="Everything you need to build modern Nuxt apps"
-      description="Start with a solid foundation. This template includes all the essentials for building production-ready applications with Nuxt UI's powerful component system."
-      :features="[{
-        icon: 'i-lucide-rocket',
-        title: 'Production-ready from day one',
-        description: 'Pre-configured with TypeScript, ESLint, Tailwind CSS, and all the best practices. Focus on building features, not setting up tooling.'
-      }, {
-        icon: 'i-lucide-palette',
-        title: 'Beautiful by default',
-        description: 'Leveraging Nuxt UI\'s design system with automatic dark mode, consistent spacing, and polished components that look great out of the box.'
-      }, {
-        icon: 'i-lucide-zap',
-        title: 'Lightning fast',
-        description: 'Optimized for performance with SSR/SSG support, automatic code splitting, and edge-ready deployment. Your users will love the speed.'
-      }, {
-        icon: 'i-lucide-blocks',
-        title: '100+ components included',
-        description: 'Access Nuxt UI\'s comprehensive component library. From forms to navigation, everything is accessible, responsive, and customizable.'
-      }, {
-        icon: 'i-lucide-code-2',
-        title: 'Developer experience first',
-        description: 'Auto-imports, hot module replacement, and TypeScript support. Write less boilerplate and ship more features.'
-      }, {
-        icon: 'i-lucide-shield-check',
-        title: 'Built for scale',
-        description: 'Enterprise-ready architecture with proper error handling, SEO optimization, and security best practices built-in.'
-      }]"
-    />
+    <!-- Token Input Card -->
+    <UCard class="mb-8">
+      <template #header>
+        <div class="flex items-center gap-2">
+          <UIcon name="i-lucide-key" class="size-5 text-primary" />
+          <h2 class="font-semibold text-highlighted">
+            API Token
+          </h2>
+        </div>
+      </template>
 
-    <UPageSection>
-      <UPageCTA
-        title="Ready to build your next Nuxt app?"
-        description="Join thousands of developers building with Nuxt and Nuxt UI. Get this template and start shipping today."
-        variant="subtle"
-        :links="[{
-          label: 'Start building',
-          to: 'https://ui.nuxt.com/docs/getting-started/installation/nuxt',
-          target: '_blank',
-          trailingIcon: 'i-lucide-arrow-right',
-          color: 'neutral'
-        }, {
-          label: 'View on GitHub',
-          to: 'https://github.com/nuxt-ui-templates/starter',
-          target: '_blank',
-          icon: 'i-simple-icons-github',
-          color: 'neutral',
-          variant: 'outline'
-        }]"
-      />
-    </UPageSection>
+      <div class="space-y-4">
+        <UFormField label="Phrase API Token" name="token" help="Enter your Phrase API access token to connect">
+          <UInput
+            v-model="inputToken"
+            :type="showToken ? 'text' : 'password'"
+            placeholder="Enter your API token"
+            :disabled="loading"
+            :ui="{ trailing: 'pe-1' }"
+            class="w-full"
+          >
+            <template #trailing>
+              <UButton
+                color="neutral"
+                variant="link"
+                size="sm"
+                :icon="showToken ? 'i-lucide-eye-off' : 'i-lucide-eye'"
+                :aria-label="showToken ? 'Hide token' : 'Show token'"
+                @click="showToken = !showToken"
+              />
+            </template>
+          </UInput>
+        </UFormField>
+
+        <div class="flex gap-2">
+          <UButton
+            :loading="loading"
+            :disabled="!inputToken || loading"
+            icon="i-lucide-plug"
+            @click="handleConnect"
+          >
+            {{ isConnected ? 'Refresh' : 'Connect' }}
+          </UButton>
+
+          <UButton
+            v-if="isConnected"
+            color="neutral"
+            variant="outline"
+            icon="i-lucide-log-out"
+            @click="handleDisconnect"
+          >
+            Disconnect
+          </UButton>
+        </div>
+      </div>
+    </UCard>
+
+    <!-- Projects Table Card -->
+    <UCard v-if="isConnected || loading">
+      <template #header>
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <UIcon name="i-lucide-folder" class="size-5 text-primary" />
+            <h2 class="font-semibold text-highlighted">
+              Projects
+            </h2>
+          </div>
+          <UBadge v-if="projects.length" color="neutral" variant="subtle">
+            {{ projects.length }} project{{ projects.length === 1 ? '' : 's' }}
+          </UBadge>
+        </div>
+      </template>
+
+      <UTable
+        :data="projects"
+        :columns="columns"
+        :loading="loading"
+        class="w-full"
+      >
+        <template #empty>
+          <div class="flex flex-col items-center justify-center py-8 text-muted">
+            <UIcon name="i-lucide-folder-open" class="size-12 mb-2 opacity-50" />
+            <p>No projects found</p>
+          </div>
+        </template>
+      </UTable>
+    </UCard>
+
+    <!-- Initial State - Not Connected -->
+    <UCard v-else variant="subtle">
+      <div class="flex flex-col items-center justify-center py-12 text-center">
+        <UIcon name="i-lucide-cloud-off" class="size-16 mb-4 text-muted opacity-50" />
+        <h3 class="text-lg font-medium text-highlighted mb-2">
+          Not Connected
+        </h3>
+        <p class="text-muted max-w-md">
+          Enter your Phrase API token above to view and manage your projects.
+          You can generate a token in your
+          <UButton
+            to="https://app.phrase.com/settings/oauth_access_tokens"
+            target="_blank"
+            variant="link"
+            class="p-0 h-auto"
+          >
+            Phrase settings
+          </UButton>.
+        </p>
+      </div>
+    </UCard>
   </div>
 </template>
