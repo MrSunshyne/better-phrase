@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { banner } from '#build/ui'
 import JsonEditorVue from 'json-editor-vue'
 import 'vanilla-jsoneditor/themes/jse-theme-dark.css'
 
@@ -591,7 +590,7 @@ function mergeDiffParts(parts: DiffPart[]): DiffPart[] {
       <ClientOnly>
         <JsonEditorVue
           v-model="jsonInput"
-          :mode="'text'"
+          mode="text"
           :stringified="false"
           :main-menu-bar="false"
           :navigation-bar="false"

@@ -1,5 +1,3 @@
-import type { CacheStore } from './useCache'
-
 export interface PhraseProject {
   id: string
   name: string
