@@ -1,6 +1,12 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
 
+/* Prevent page-level scroll - only internal elements should scroll */
+html, body, #__nuxt {
+  height: 100%;
+  overflow: hidden;
+}
+
 @theme static {
   --font-sans: 'Public Sans', sans-serif;
 
