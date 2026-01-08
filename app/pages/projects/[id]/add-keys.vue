@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import type { PhraseLocale } from '~/composables/usePhrase'
+import type { banner } from '#build/ui'
+import JsonEditorVue from 'json-editor-vue'
+import 'vanilla-jsoneditor/themes/jse-theme-dark.css'
 
 const route = useRoute()
 const router = useRouter()
 const toast = useToast()
+const colorMode = useColorMode()
 
 const projectId = computed(() => route.params.id as string)
+const isDarkMode = computed(() => colorMode.value === 'dark')
 
 const {
   currentProject,
@@ -17,9 +21,12 @@ const {
   bulkUpdateTranslations
 } = usePhrase()
 
-// JSON input
-const jsonInput = ref('')
+// JSON input - using object for json-editor-vue
+const jsonInput = ref<Record<string, Record<string, string>>>({})
 const parseError = ref<string | null>(null)
+
+// LocalStorage key for persisting editor content
+const storageKey = computed(() => `better-phrase-editor-${projectId.value}`)
 
 // Parsed data
 interface ParsedKey {
@@ -37,104 +44,117 @@ const showPreview = ref(false)
 
 // Options
 const skipExisting = ref(false)
+const skipUnchanged = ref(false)
+const activeTab = ref<'editor' | 'preview'>('editor')
+
+// Import errors
+const importErrors = ref<string[]>([])
+
+// Check if a key has any actual changes in translations
+function hasChanges(key: ParsedKey): boolean {
+  if (key.status === 'new') return true
+  if (!key.existingTranslations) return true
+
+  for (const [locale, value] of Object.entries(key.translations)) {
+    if (key.existingTranslations[locale] !== value) {
+      return true
+    }
+  }
+  return false
+}
 
 // Summary stats
 const stats = computed(() => {
   const newKeys = parsedKeys.value.filter(k => k.status === 'new').length
   const updateKeys = parsedKeys.value.filter(k => k.status === 'update').length
-  return { newKeys, updateKeys, total: parsedKeys.value.length }
+  const unchangedKeys = parsedKeys.value.filter(k => k.status === 'update' && !hasChanges(k)).length
+  return { newKeys, updateKeys, unchangedKeys, total: parsedKeys.value.length }
 })
 
 // Keys to import based on options
 const keysToImport = computed(() => {
+  let keys = parsedKeys.value
+
   if (skipExisting.value) {
-    return parsedKeys.value.filter(k => k.status === 'new')
+    keys = keys.filter(k => k.status === 'new')
   }
-  return parsedKeys.value
+
+  if (skipUnchanged.value) {
+    keys = keys.filter(k => hasChanges(k))
+  }
+
+  return keys
 })
 
-// Load project data
+// Load project data only if not already loaded
 onMounted(async () => {
-  await Promise.all([
-    fetchProject(projectId.value),
-    fetchLocales(projectId.value)
-  ])
+  const promises: Promise<unknown>[] = []
+
+  // Only fetch if not already loaded
+  if (!currentProject.value || currentProject.value.id !== projectId.value) {
+    promises.push(fetchProject(projectId.value))
+  }
+  if (locales.value.length === 0) {
+    promises.push(fetchLocales(projectId.value))
+  }
+
+  if (promises.length > 0) {
+    await Promise.all(promises)
+  }
+
+  // Restore editor content from localStorage
+  const saved = localStorage.getItem(storageKey.value)
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved)
+      if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+        jsonInput.value = parsed
+      }
+    } catch {
+      // Invalid JSON in storage, ignore
+    }
+  }
 })
 
-// Detect JSON format and parse
-function detectAndParseJson(input: string): { keys: ParsedKey[]; locales: string[] } | null {
-  try {
-    const data = JSON.parse(input)
+// Save editor content to localStorage when it changes
+watch(jsonInput, (newValue) => {
+  if (newValue && Object.keys(newValue).length > 0) {
+    localStorage.setItem(storageKey.value, JSON.stringify(newValue))
+  }
+}, { deep: true })
 
-    if (typeof data !== 'object' || data === null) {
+// Parse JSON object in format: { "key.name": { "en": "value", "fr": "value" } }
+function parseJsonData(data: Record<string, Record<string, string>>): { keys: ParsedKey[], locales: string[] } | null {
+  try {
+    if (typeof data !== 'object' || data === null || Array.isArray(data)) {
       throw new Error('JSON must be an object')
     }
 
     const keys: ParsedKey[] = []
     const localesSet = new Set<string>()
 
-    // Check first key to determine format
-    const firstKey = Object.keys(data)[0]
-    if (!firstKey) {
+    if (Object.keys(data).length === 0) {
       throw new Error('JSON is empty')
     }
 
-    const firstValue = data[firstKey]
-
-    // Format 1: Nested by key { "key.name": { "en": "value", "fr": "value" } }
-    if (typeof firstValue === 'object' && firstValue !== null && !Array.isArray(firstValue)) {
-      // Check if first value looks like locale codes (2-5 chars, lowercase)
-      const firstValueKeys = Object.keys(firstValue)
-      const looksLikeLocales = firstValueKeys.every(k => /^[a-z]{2}(-[A-Z]{2})?$/.test(k))
-
-      if (looksLikeLocales) {
-        // Format 1: Keys with locale translations
-        for (const [keyName, translations] of Object.entries(data)) {
-          if (typeof translations === 'object' && translations !== null) {
-            const trans = translations as Record<string, string>
-            keys.push({
-              name: keyName,
-              translations: trans,
-              status: 'unknown'
-            })
-            Object.keys(trans).forEach(locale => localesSet.add(locale))
-          }
-        }
-      } else {
-        // Format 2: Locales with key translations { "en": { "key.name": "value" } }
-        const localeData = data as Record<string, Record<string, string>>
-        const allKeys = new Set<string>()
-
-        // Collect all keys from all locales
-        for (const [locale, translations] of Object.entries(localeData)) {
-          localesSet.add(locale)
-          Object.keys(translations).forEach(k => allKeys.add(k))
-        }
-
-        // Build keys with translations
-        for (const keyName of allKeys) {
-          const translations: Record<string, string> = {}
-          for (const [locale, localeTranslations] of Object.entries(localeData)) {
-            if (localeTranslations[keyName]) {
-              translations[locale] = localeTranslations[keyName]
-            }
-          }
-          keys.push({
-            name: keyName,
-            translations,
-            status: 'unknown'
-          })
-        }
+    // Parse format: { "key.name": { "en": "value", "fr": "value" } }
+    for (const [keyName, translations] of Object.entries(data)) {
+      if (typeof translations !== 'object' || translations === null || Array.isArray(translations)) {
+        throw new Error(`Invalid value for key "${keyName}". Expected an object with locale translations.`)
       }
-    } else {
-      throw new Error('Unsupported JSON format. Expected object with key-locale or locale-key structure.')
+
+      const trans = translations as Record<string, string>
+      keys.push({
+        name: keyName,
+        translations: trans,
+        status: 'unknown'
+      })
+      Object.keys(trans).forEach(locale => localesSet.add(locale))
     }
 
     return { keys, locales: Array.from(localesSet) }
   } catch (err) {
-    if (err instanceof SyntaxError) {
-      parseError.value = 'Invalid JSON syntax'
-    } else if (err instanceof Error) {
+    if (err instanceof Error) {
       parseError.value = err.message
     }
     return null
@@ -146,13 +166,14 @@ async function handleVerify() {
   parseError.value = null
   parsedKeys.value = []
   detectedLocales.value = []
+  importErrors.value = []
 
-  if (!jsonInput.value.trim()) {
+  if (!jsonInput.value || Object.keys(jsonInput.value).length === 0) {
     parseError.value = 'Please enter some JSON'
     return
   }
 
-  const result = detectAndParseJson(jsonInput.value)
+  const result = parseJsonData(jsonInput.value)
   if (!result) return
 
   parsedKeys.value = result.keys
@@ -181,6 +202,7 @@ async function handleVerify() {
     }
 
     showPreview.value = true
+    activeTab.value = 'preview'
   } catch (err) {
     console.error('Failed to verify keys:', err)
     parseError.value = 'Failed to verify keys against Phrase'
@@ -202,6 +224,7 @@ async function handleImport() {
   }
 
   isImporting.value = true
+  importErrors.value = []
 
   try {
     const newKeys = keysToImport.value.filter(k => k.status === 'new')
@@ -210,6 +233,7 @@ async function handleImport() {
     let createdCount = 0
     let updatedCount = 0
     let errorCount = 0
+    const allErrorDetails: string[] = []
 
     // Create new keys
     if (newKeys.length > 0) {
@@ -219,6 +243,7 @@ async function handleImport() {
       })))
       createdCount = result.created
       errorCount += result.errors
+      allErrorDetails.push(...result.errorDetails)
     }
 
     // Update existing keys
@@ -229,16 +254,19 @@ async function handleImport() {
       })))
       updatedCount = result.updated
       errorCount += result.errors
+      allErrorDetails.push(...result.errorDetails)
     }
 
     // Show result
-    if (errorCount > 0) {
+    if (errorCount > 0 || allErrorDetails.length > 0) {
+      importErrors.value = allErrorDetails
       toast.add({
         title: 'Import completed with errors',
-        description: `Created: ${createdCount}, Updated: ${updatedCount}, Errors: ${errorCount}`,
+        description: `Created: ${createdCount}, Updated: ${updatedCount}, Errors: ${allErrorDetails.length}`,
         color: 'warning',
         icon: 'i-lucide-alert-triangle'
       })
+      // Stay on page so user can review and retry
     } else {
       toast.add({
         title: 'Import successful',
@@ -246,15 +274,20 @@ async function handleImport() {
         color: 'success',
         icon: 'i-lucide-check-circle'
       })
-    }
 
-    // Go back to project page
-    router.push(`/projects/${projectId.value}`)
+      // Clear saved editor content on successful import
+      localStorage.removeItem(storageKey.value)
+
+      // Go back to project page only on full success
+      router.push(`/projects/${projectId.value}`)
+    }
   } catch (err) {
     console.error('Import failed:', err)
+    const errorMsg = err instanceof Error ? err.message : 'An error occurred while importing keys'
+    importErrors.value = [errorMsg]
     toast.add({
       title: 'Import failed',
-      description: 'An error occurred while importing keys',
+      description: errorMsg,
       color: 'error',
       icon: 'i-lucide-x-circle'
     })
@@ -263,14 +296,20 @@ async function handleImport() {
   }
 }
 
-// Reset to edit mode
-function handleEdit() {
-  showPreview.value = false
-}
-
 // Go back
 function goBack() {
   router.push(`/projects/${projectId.value}`)
+}
+
+// Clear editor content
+function clearEditor() {
+  jsonInput.value = {}
+  parsedKeys.value = []
+  detectedLocales.value = []
+  showPreview.value = false
+  activeTab.value = 'editor'
+  importErrors.value = []
+  localStorage.removeItem(storageKey.value)
 }
 
 // Get locale name from code
@@ -278,184 +317,334 @@ function getLocaleName(code: string): string {
   const locale = locales.value.find(l => l.code === code)
   return locale?.name || code
 }
+
+// Word-level diff for better change visualization
+interface DiffPart {
+  type: 'same' | 'added' | 'removed'
+  text: string
+}
+
+function computeWordDiff(oldText: string, newText: string): DiffPart[] {
+  // Split by words while preserving whitespace
+  const oldWords = oldText.split(/(\s+)/).filter(Boolean)
+  const newWords = newText.split(/(\s+)/).filter(Boolean)
+
+  // Simple LCS-based diff
+  const lcs = longestCommonSubsequence(oldWords, newWords)
+  const result: DiffPart[] = []
+
+  let oldIdx = 0
+  let newIdx = 0
+  let lcsIdx = 0
+
+  while (oldIdx < oldWords.length || newIdx < newWords.length) {
+    const lcsWord = lcsIdx < lcs.length ? lcs[lcsIdx] : null
+    const oldWord = oldIdx < oldWords.length ? oldWords[oldIdx] : null
+    const newWord = newIdx < newWords.length ? newWords[newIdx] : null
+
+    if (lcsWord !== null && oldWord === lcsWord && newWord === lcsWord) {
+      // Common word
+      result.push({ type: 'same', text: lcsWord as string })
+      oldIdx++
+      newIdx++
+      lcsIdx++
+    } else if (oldWord !== null && (lcsWord === null || oldWord !== lcsWord)) {
+      // Removed word
+      result.push({ type: 'removed', text: oldWord as string })
+      oldIdx++
+    } else if (newWord !== null && (lcsWord === null || newWord !== lcsWord)) {
+      // Added word
+      result.push({ type: 'added', text: newWord as string })
+      newIdx++
+    }
+  }
+
+  return mergeDiffParts(result)
+}
+
+function longestCommonSubsequence(a: string[], b: string[]): string[] {
+  const m = a.length
+  const n = b.length
+
+  // Create DP table
+  const dp: number[][] = []
+  for (let i = 0; i <= m; i++) {
+    dp[i] = new Array(n + 1).fill(0)
+  }
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i]![j] = (dp[i - 1]?.[j - 1] ?? 0) + 1
+      } else {
+        dp[i]![j] = Math.max(dp[i - 1]?.[j] ?? 0, dp[i]?.[j - 1] ?? 0)
+      }
+    }
+  }
+
+  // Backtrack to find LCS
+  const lcs: string[] = []
+  let i = m
+  let j = n
+  while (i > 0 && j > 0) {
+    if (a[i - 1] === b[j - 1]) {
+      lcs.unshift(a[i - 1]!)
+      i--
+      j--
+    } else if ((dp[i - 1]?.[j] ?? 0) > (dp[i]?.[j - 1] ?? 0)) {
+      i--
+    } else {
+      j--
+    }
+  }
+
+  return lcs
+}
+
+function mergeDiffParts(parts: DiffPart[]): DiffPart[] {
+  if (parts.length === 0) return parts
+
+  const merged: DiffPart[] = []
+  const first = parts[0]!
+  let current: DiffPart = { type: first.type, text: first.text }
+
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i]!
+    if (part.type === current.type) {
+      current.text += part.text
+    } else {
+      merged.push(current)
+      current = { type: part.type, text: part.text }
+    }
+  }
+  merged.push(current)
+
+  return merged
+}
 </script>
 
 <template>
-  <div class="max-w-6xl mx-auto px-4 py-8">
-    <!-- Header -->
-    <div class="flex items-center gap-4 mb-8">
-      <UButton
-        color="neutral"
-        variant="ghost"
-        icon="i-lucide-arrow-left"
-        @click="goBack"
-      />
-      <div>
-        <h1 class="text-2xl font-bold text-highlighted">
-          Add Keys
-        </h1>
-        <p class="text-sm text-muted">
-          {{ currentProject?.name || 'Loading...' }}
-        </p>
-      </div>
-    </div>
-
-    <!-- JSON Input Section (shown when not in preview) -->
-    <UCard v-if="!showPreview" class="mb-6">
-      <template #header>
-        <div class="flex items-center gap-2">
-          <UIcon name="i-lucide-code" class="size-5 text-primary" />
-          <h2 class="font-semibold text-highlighted">
-            Paste JSON
-          </h2>
-        </div>
-      </template>
-
-      <div class="space-y-4">
-        <p class="text-sm text-muted">
-          Paste your translation JSON below. Supported formats:
-        </p>
-
-        <div class="grid md:grid-cols-2 gap-4 text-xs">
-          <div class="p-3 bg-elevated/50 rounded-lg">
-            <p class="font-medium text-highlighted mb-2">Format 1: By Key</p>
-            <pre class="text-muted overflow-x-auto">{
-  "key.name": {
-    "en": "English",
-    "fr": "French"
-  }
-}</pre>
-          </div>
-          <div class="p-3 bg-elevated/50 rounded-lg">
-            <p class="font-medium text-highlighted mb-2">Format 2: By Locale</p>
-            <pre class="text-muted overflow-x-auto">{
-  "en": {
-    "key.name": "English"
-  },
-  "fr": {
-    "key.name": "French"
-  }
-}</pre>
-          </div>
-        </div>
-
-        <UTextarea
-          v-model="jsonInput"
-          :rows="15"
-          placeholder="Paste your JSON here..."
-          class="font-mono text-sm"
-          :color="parseError ? 'error' : undefined"
+  <div class="px-4 py-2 h-full flex flex-col">
+    <!-- Combined Header -->
+    <div class="shrink-0 mb-2 flex items-center justify-between gap-4 border-b border-default pb-2">
+      <!-- Left: Logo + Back + Title + Tabs -->
+      <div class="flex items-center gap-3">
+        <NuxtLink
+          to="/"
+          class="flex items-center gap-2 shrink-0"
+        >
+          <AppLogo class="w-auto h-6" />
+        </NuxtLink>
+        <span class="text-muted/30">|</span>
+        <UButton
+          color="neutral"
+          variant="ghost"
+          icon="i-lucide-arrow-left"
+          size="xs"
+          @click="goBack"
         />
+        <div class="flex items-center gap-2">
+          <h1 class="text-sm font-semibold text-highlighted">
+            Add Keys
+          </h1>
+          <span class="text-xs text-muted">{{ currentProject?.name }}</span>
+        </div>
+        <span class="text-muted/30">|</span>
+        <!-- Tabs -->
+        <div class="flex items-center gap-0.5 bg-elevated/50 p-0.5 rounded-md">
+          <button
+            class="px-3 py-1 text-xs font-medium rounded transition-colors"
+            :class="activeTab === 'editor' ? 'bg-default text-highlighted shadow-sm' : 'text-muted hover:text-highlighted'"
+            @click="activeTab = 'editor'"
+          >
+            Editor
+          </button>
+          <UTooltip
+            :text="!showPreview ? 'Verify JSON first' : undefined"
+            :disabled="showPreview"
+          >
+            <button
+              class="px-3 py-1 text-xs font-medium rounded transition-colors flex items-center gap-1"
+              :class="[
+                activeTab === 'preview' ? 'bg-default text-highlighted shadow-sm' : 'text-muted hover:text-highlighted',
+                !showPreview && 'opacity-50 cursor-not-allowed'
+              ]"
+              :disabled="!showPreview"
+              @click="showPreview && (activeTab = 'preview')"
+            >
+              Preview
+              <UBadge
+                v-if="showPreview"
+                :color="stats.updateKeys > 0 ? 'warning' : 'success'"
+                variant="subtle"
+                size="xs"
+              >
+                {{ keysToImport.length }}
+              </UBadge>
+            </button>
+          </UTooltip>
+        </div>
+      </div>
 
+      <!-- Right: Actions + App Controls -->
+      <div class="flex items-center gap-2">
         <UAlert
           v-if="parseError"
           color="error"
-          icon="i-lucide-alert-circle"
-          :title="parseError"
-        />
+          variant="subtle"
+          class="py-0.5 px-2"
+        >
+          <span class="text-xs">{{ parseError }}</span>
+        </UAlert>
 
-        <div class="flex justify-end">
+        <UPopover
+          mode="hover"
+          :content="{ side: 'bottom', align: 'end' }"
+        >
           <UButton
-            icon="i-lucide-check-circle"
-            :loading="isVerifying"
-            :disabled="!jsonInput.trim()"
-            @click="handleVerify"
-          >
-            Verify & Preview
-          </UButton>
-        </div>
-      </div>
-    </UCard>
-
-    <!-- Preview Section (shown after verification) -->
-    <template v-if="showPreview">
-      <!-- Summary Card -->
-      <UCard class="mb-6">
-        <template #header>
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <UIcon name="i-lucide-clipboard-list" class="size-5 text-primary" />
-              <h2 class="font-semibold text-highlighted">
-                Import Preview
-              </h2>
-            </div>
-            <UButton
-              color="neutral"
-              variant="ghost"
-              size="sm"
-              icon="i-lucide-pencil"
-              @click="handleEdit"
-            >
-              Edit JSON
-            </UButton>
-          </div>
-        </template>
-
-        <div class="space-y-4">
-          <!-- Stats -->
-          <div class="grid grid-cols-3 gap-4">
-            <div class="text-center p-4 bg-elevated/50 rounded-lg">
-              <p class="text-2xl font-bold text-highlighted">{{ stats.total }}</p>
-              <p class="text-sm text-muted">Total Keys</p>
-            </div>
-            <div class="text-center p-4 bg-success/10 rounded-lg">
-              <p class="text-2xl font-bold text-success">{{ stats.newKeys }}</p>
-              <p class="text-sm text-muted">New Keys</p>
-            </div>
-            <div class="text-center p-4 bg-warning/10 rounded-lg">
-              <p class="text-2xl font-bold text-warning">{{ stats.updateKeys }}</p>
-              <p class="text-sm text-muted">Updates</p>
-            </div>
-          </div>
-
-          <!-- Detected Locales -->
-          <div>
-            <p class="text-sm text-muted mb-2">Detected languages:</p>
-            <div class="flex flex-wrap gap-2">
-              <UBadge
-                v-for="locale in detectedLocales"
-                :key="locale"
-                color="primary"
-                variant="subtle"
-              >
-                {{ getLocaleName(locale) }} ({{ locale }})
-              </UBadge>
-            </div>
-          </div>
-
-          <!-- Warning for updates -->
-          <UAlert
-            v-if="stats.updateKeys > 0"
-            color="warning"
-            icon="i-lucide-alert-triangle"
-            title="Existing keys will be updated"
-            :description="`${stats.updateKeys} key(s) already exist and will have their translations overwritten.`"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            icon="i-lucide-help-circle"
           />
+          <template #content>
+            <div class="p-3 text-xs max-w-xs">
+              <p class="font-medium text-highlighted mb-2">
+                Expected format:
+              </p>
+              <pre class="text-muted bg-elevated/50 p-2 rounded overflow-x-auto">{
+  "key.name": {
+    "en": "English value",
+    "fr": "French value"
+  }
+}</pre>
+            </div>
+          </template>
+        </UPopover>
 
-          <!-- Skip existing option -->
+        <UButton
+          v-if="activeTab === 'editor' && jsonInput && Object.keys(jsonInput).length > 0"
+          icon="i-lucide-trash-2"
+          color="neutral"
+          variant="ghost"
+          size="xs"
+          @click="clearEditor"
+        >
+          Clear
+        </UButton>
+
+        <UButton
+          v-if="activeTab === 'editor'"
+          icon="i-lucide-check-circle"
+          size="xs"
+          :loading="isVerifying"
+          :disabled="!jsonInput || Object.keys(jsonInput).length === 0"
+          @click="handleVerify"
+        >
+          Verify
+        </UButton>
+
+        <template v-if="activeTab === 'preview' && showPreview">
           <UCheckbox
             v-if="stats.updateKeys > 0"
             v-model="skipExisting"
-            label="Skip existing keys (only add new keys)"
+            label="Skip existing"
+            size="xs"
           />
-        </div>
-      </UCard>
-
-      <!-- Preview Table -->
-      <UCard class="mb-6">
-        <template #header>
-          <div class="flex items-center gap-2">
-            <UIcon name="i-lucide-table" class="size-5 text-primary" />
-            <h2 class="font-semibold text-highlighted">
-              Keys to Import
-              <UBadge color="neutral" variant="subtle" class="ml-2">
-                {{ keysToImport.length }}
-              </UBadge>
-            </h2>
-          </div>
+          <UCheckbox
+            v-if="stats.unchangedKeys > 0"
+            v-model="skipUnchanged"
+            label="Skip unchanged"
+            size="xs"
+          />
+          <UButton
+            icon="i-lucide-upload"
+            size="xs"
+            :loading="isImporting"
+            :disabled="keysToImport.length === 0"
+            @click="handleImport"
+          >
+            Import {{ keysToImport.length }}
+          </UButton>
         </template>
 
-        <div class="overflow-x-auto max-h-96">
+        <span class="text-muted/30">|</span>
+        <LanguageSelector />
+        <UColorModeButton size="xs" />
+        <UButton
+          to="https://github.com/MrSunshyne/better-phrase"
+          target="_blank"
+          icon="i-simple-icons-github"
+          aria-label="GitHub"
+          color="neutral"
+          variant="ghost"
+          size="xs"
+        />
+      </div>
+    </div>
+
+    <!-- Editor Tab -->
+    <div
+      v-show="activeTab === 'editor'"
+      class="flex-1 min-h-0 border border-default rounded-lg overflow-auto"
+    >
+      <ClientOnly>
+        <JsonEditorVue
+          v-model="jsonInput"
+          :mode="'text'"
+          :stringified="false"
+          :main-menu-bar="false"
+          :navigation-bar="false"
+          :class="['json-editor-container', { 'jse-theme-dark': isDarkMode }]"
+        />
+      </ClientOnly>
+    </div>
+
+    <!-- Preview Tab -->
+    <div
+      v-show="activeTab === 'preview'"
+      class="flex-1 flex flex-col min-h-0"
+    >
+      <template v-if="showPreview">
+        <!-- Import Errors -->
+        <UAlert
+          v-if="importErrors.length > 0"
+          color="error"
+          icon="i-lucide-alert-circle"
+          title="Import Errors"
+          class="shrink-0 mb-3"
+        >
+          <template #description>
+            <ul class="list-disc list-inside space-y-1 mt-1 text-sm">
+              <li
+                v-for="(error, idx) in importErrors"
+                :key="idx"
+              >
+                {{ error }}
+              </li>
+            </ul>
+          </template>
+        </UAlert>
+
+        <!-- Stats Bar -->
+        <div class="shrink-0 mb-3 flex items-center gap-4 text-sm text-muted px-1">
+          <span><span class="font-medium text-highlighted">{{ stats.total }}</span> keys</span>
+          <span class="text-muted/50">·</span>
+          <span class="text-success"><span class="font-medium">{{ stats.newKeys }}</span> new</span>
+          <span
+            v-if="stats.updateKeys > 0"
+            class="text-warning"
+          ><span class="font-medium">{{ stats.updateKeys }}</span> updates</span>
+          <span
+            v-if="stats.unchangedKeys > 0"
+            class="text-muted"
+          >(<span class="font-medium">{{ stats.unchangedKeys }}</span> unchanged)</span>
+          <span class="text-muted/50">·</span>
+          <span>{{ detectedLocales.join(', ') }}</span>
+        </div>
+
+        <!-- Preview Table -->
+        <div class="flex-1 min-h-0 border border-default rounded-lg overflow-auto">
           <table class="min-w-full divide-y divide-default">
             <thead class="bg-elevated/50 sticky top-0">
               <tr>
@@ -500,38 +689,89 @@ function getLocaleName(code: string): string {
                   :key="`${key.name}-${locale}`"
                   class="px-4 py-3 text-sm"
                 >
-                  <div v-if="key.translations[locale]">
-                    {{ key.translations[locale] }}
-                  </div>
-                  <span v-else class="text-muted italic">—</span>
+                  <template v-if="key.translations[locale]">
+                    <!-- Value changed: show word-level diff -->
+                    <span
+                      v-if="key.status === 'update' && key.existingTranslations?.[locale] && key.existingTranslations[locale] !== key.translations[locale]"
+                      class="inline"
+                    >
+                      <template
+                        v-for="(part, idx) in computeWordDiff(key.existingTranslations[locale], key.translations[locale])"
+                        :key="idx"
+                      >
+                        <span
+                          v-if="part.type === 'removed'"
+                          class="bg-error/20 text-error line-through"
+                        >{{ part.text }}</span>
+                        <span
+                          v-else-if="part.type === 'added'"
+                          class="bg-success/20 text-success"
+                        >{{ part.text }}</span>
+                        <span v-else>{{ part.text }}</span>
+                      </template>
+                    </span>
+                    <!-- No change -->
+                    <span
+                      v-else-if="key.status === 'update' && key.existingTranslations?.[locale] === key.translations[locale]"
+                      class="text-muted"
+                    >{{ key.translations[locale] }}</span>
+                    <!-- New value (new key or new locale) -->
+                    <span v-else>{{ key.translations[locale] }}</span>
+                  </template>
+                  <span
+                    v-else
+                    class="text-muted"
+                  >—</span>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
-      </UCard>
+      </template>
 
-      <!-- Actions -->
-      <div class="flex items-center justify-between">
-        <UButton
-          color="neutral"
-          variant="outline"
-          icon="i-lucide-x"
-          @click="goBack"
-        >
-          Cancel
-        </UButton>
-
-        <UButton
-          icon="i-lucide-upload"
-          :loading="isImporting"
-          :disabled="keysToImport.length === 0"
-          @click="handleImport"
-        >
-          Import {{ keysToImport.length }} Key{{ keysToImport.length === 1 ? '' : 's' }}
-        </UButton>
+      <!-- Empty state when no preview -->
+      <div
+        v-else
+        class="flex-1 flex items-center justify-center text-muted"
+      >
+        <div class="text-center">
+          <UIcon
+            name="i-lucide-file-search"
+            class="size-12 mb-3 opacity-50"
+          />
+          <p>Paste JSON in the Editor tab and click Verify</p>
+        </div>
       </div>
-    </template>
+    </div>
   </div>
 </template>
 
+<style>
+.json-editor-container {
+  --jse-theme-color: var(--ui-primary);
+  --jse-theme-color-highlight: var(--ui-primary);
+  height: 100%;
+  border-radius: 0;
+}
+
+/* Make borders more subtle in dark mode */
+.json-editor-container.jse-theme-dark {
+  --jse-panel-border: rgba(255, 255, 255, 0.08);
+  --jse-main-border: rgba(255, 255, 255, 0.08);
+}
+
+/* Target the main wrapper border in dark mode */
+.json-editor-container.jse-theme-dark :deep(.jse-main) {
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Status bar border */
+.json-editor-container.jse-theme-dark :deep(.jse-status-bar) {
+  border-top-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Line numbers gutter border */
+.json-editor-container.jse-theme-dark :deep(.cm-gutters) {
+  border-right-color: rgba(255, 255, 255, 0.08) !important;
+}
+</style>
