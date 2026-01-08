@@ -69,6 +69,7 @@ export interface FetchKeysOptions {
 
 const STORAGE_KEY = 'phrase_api_token'
 const SELECTED_LOCALES_KEY = 'phrase_selected_locales'
+const ACTIVE_LOCALES_KEY = 'phrase_active_locales'
 
 export function usePhrase() {
   const cache = useCache()
@@ -93,8 +94,11 @@ export function usePhrase() {
     isSyncing: false
   }))
 
-  // Selected locales per project (persisted)
+  // Selected locales per project (persisted) - legacy, kept for backwards compatibility
   const selectedLocales = useState<Record<string, string[]>>('phrase_selected_locales', () => ({}))
+
+  // Global active locales (persisted) - the languages shown in the editor
+  const activeLocales = useState<string[]>('phrase_active_locales', () => [])
 
   // Initialize from localStorage on client side
   if (import.meta.client) {
@@ -107,6 +111,16 @@ export function usePhrase() {
     if (storedLocales) {
       try {
         selectedLocales.value = JSON.parse(storedLocales)
+      } catch {
+        // Invalid JSON, ignore
+      }
+    }
+
+    // Load active locales
+    const storedActiveLocales = localStorage.getItem(ACTIVE_LOCALES_KEY)
+    if (storedActiveLocales) {
+      try {
+        activeLocales.value = JSON.parse(storedActiveLocales)
       } catch {
         // Invalid JSON, ignore
       }
@@ -173,6 +187,29 @@ export function usePhrase() {
     }
     if (import.meta.client) {
       localStorage.setItem(SELECTED_LOCALES_KEY, JSON.stringify(selectedLocales.value))
+    }
+  }
+
+  // Global active locales management
+  function setActiveLocales(localeCodes: string[]) {
+    activeLocales.value = localeCodes
+    if (import.meta.client) {
+      localStorage.setItem(ACTIVE_LOCALES_KEY, JSON.stringify(localeCodes))
+    }
+  }
+
+  // Initialize active locales with sensible defaults when locales are fetched
+  function initializeActiveLocales(availableLocales: PhraseLocale[]) {
+    if (activeLocales.value.length === 0 && availableLocales.length > 0) {
+      // Default to 'en' and 'fr' if they exist, otherwise first 2 locales
+      const defaultCodes = ['en', 'fr']
+      const availableDefaults = defaultCodes.filter(code =>
+        availableLocales.some(l => l.code === code)
+      )
+      const initialLocales = availableDefaults.length > 0
+        ? availableDefaults
+        : availableLocales.slice(0, 2).map(l => l.code)
+      setActiveLocales(initialLocales)
     }
   }
 
@@ -292,6 +329,9 @@ export function usePhrase() {
       const response = await apiRequest<PhraseLocale[]>(`/projects/${projectId}/locales`)
       locales.value = response
 
+      // Initialize active locales with defaults if not set
+      initializeActiveLocales(response)
+
       // Cache the results
       if (import.meta.client) {
         await cache.setCachedBulk(
@@ -312,7 +352,7 @@ export function usePhrase() {
     projectId: string,
     options: FetchKeysOptions = {},
     forceRefresh = false
-  ): Promise<{ keys: PhraseKey[], hasMore: boolean }> {
+  ): Promise<{ keys: PhraseKey[], hasMore: boolean, total?: number }> {
     if (!token.value) return { keys: [], hasMore: false }
 
     const {
@@ -342,9 +382,28 @@ export function usePhrase() {
         }
       }
 
-      // Fetch from API
-      const response = await apiRequest<PhraseKey[]>(
-        `/projects/${projectId}/keys?${params.toString()}`
+      // Fetch from API with headers to get total count
+      let total: number | undefined
+      const response = await $fetch<PhraseKey[]>(
+        `https://api.phrase.com/v2/projects/${projectId}/keys?${params.toString()}`,
+        {
+          headers: {
+            'Authorization': `token ${token.value}`,
+            'Content-Type': 'application/json'
+          },
+          onResponse({ response: res }) {
+            // Phrase API returns pagination info in headers
+            const pagination = res.headers.get('Pagination')
+            if (pagination) {
+              try {
+                const paginationData = JSON.parse(pagination)
+                total = paginationData.total_count
+              } catch {
+                // Ignore parsing errors
+              }
+            }
+          }
+        }
       )
       keys.value = response
 
@@ -358,7 +417,8 @@ export function usePhrase() {
 
       return {
         keys: response,
-        hasMore: response.length === perPage
+        hasMore: response.length === perPage,
+        total
       }
     } catch (err: unknown) {
       console.error('Failed to fetch keys:', err)
@@ -404,19 +464,29 @@ export function usePhrase() {
     if (!token.value || keyIds.length === 0) return
 
     try {
-      // Fetch translations for all keys at once using the key_id filter
-      // Phrase API allows filtering by multiple key IDs
-      const promises = keyIds.map(keyId =>
-        apiRequest<PhraseTranslation[]>(
-          `/projects/${projectId}/translations?key_id=${keyId}`
-        ).then(trans => ({ keyId, translations: trans }))
-      )
+      // Batch key IDs into groups to reduce API calls
+      // Phrase API limits to 4 concurrent requests per user
+      const BATCH_SIZE = 4
+      const batches: string[][] = []
 
-      const results = await Promise.all(promises)
+      for (let i = 0; i < keyIds.length; i += BATCH_SIZE) {
+        batches.push(keyIds.slice(i, i + BATCH_SIZE))
+      }
 
-      // Update state
-      for (const { keyId, translations: trans } of results) {
-        translations.value.set(keyId, trans)
+      // Process batches sequentially to avoid rate limiting
+      for (const batch of batches) {
+        const promises = batch.map(keyId =>
+          apiRequest<PhraseTranslation[]>(
+            `/projects/${projectId}/translations?key_id=${keyId}`
+          ).then(trans => ({ keyId, translations: trans }))
+        )
+
+        const results = await Promise.all(promises)
+
+        // Update state for this batch
+        for (const { keyId, translations: trans } of results) {
+          translations.value.set(keyId, trans)
+        }
       }
     } catch (err: unknown) {
       console.error('Failed to fetch translations:', err)
@@ -660,13 +730,14 @@ export function usePhrase() {
   async function bulkCreateKeys(
     projectId: string,
     keysData: BulkCreateKeyData[]
-  ): Promise<{ created: number, errors: number }> {
+  ): Promise<{ created: number, errors: number, errorDetails: string[] }> {
     if (!token.value || keysData.length === 0) {
-      return { created: 0, errors: 0 }
+      return { created: 0, errors: 0, errorDetails: [] }
     }
 
     let created = 0
     let errors = 0
+    const errorDetails: string[] = []
 
     syncStatus.value.isSyncing = true
 
@@ -717,6 +788,8 @@ export function usePhrase() {
           created++
         } catch (err) {
           console.error(`Failed to create key ${keyData.name}:`, err)
+          const errorMsg = err instanceof Error ? err.message : String(err)
+          errorDetails.push(`${keyData.name}: ${errorMsg}`)
           errors++
         }
       }
@@ -724,7 +797,7 @@ export function usePhrase() {
       // Refresh the keys list
       await fetchKeys(projectId, { page: 1, perPage: 20 }, true)
 
-      return { created, errors }
+      return { created, errors, errorDetails }
     } finally {
       syncStatus.value.isSyncing = false
     }
@@ -739,13 +812,14 @@ export function usePhrase() {
   async function bulkUpdateTranslations(
     projectId: string,
     updates: BulkUpdateData[]
-  ): Promise<{ updated: number, errors: number }> {
+  ): Promise<{ updated: number, errors: number, errorDetails: string[] }> {
     if (!token.value || updates.length === 0) {
-      return { updated: 0, errors: 0 }
+      return { updated: 0, errors: 0, errorDetails: [] }
     }
 
     let updated = 0
     let errors = 0
+    const errorDetails: string[] = []
 
     syncStatus.value.isSyncing = true
 
@@ -770,6 +844,7 @@ export function usePhrase() {
 
           if (!key) {
             console.warn(`Key not found: ${update.keyName}`)
+            errorDetails.push(`${update.keyName}: Key not found`)
             errors++
             continue
           }
@@ -810,14 +885,17 @@ export function usePhrase() {
                   }
                 )
               }
-            } catch {
-              // Continue with other translations
+            } catch (localeErr) {
+              const errorMsg = localeErr instanceof Error ? localeErr.message : String(localeErr)
+              errorDetails.push(`${update.keyName} (${localeCode}): ${errorMsg}`)
             }
           }
 
           updated++
         } catch (err) {
           console.error(`Failed to update key ${update.keyName}:`, err)
+          const errorMsg = err instanceof Error ? err.message : String(err)
+          errorDetails.push(`${update.keyName}: ${errorMsg}`)
           errors++
         }
       }
@@ -825,7 +903,7 @@ export function usePhrase() {
       // Refresh the keys list
       await fetchKeys(projectId, { page: 1, perPage: 20 }, true)
 
-      return { updated, errors }
+      return { updated, errors, errorDetails }
     } finally {
       syncStatus.value.isSyncing = false
     }
@@ -844,14 +922,18 @@ export function usePhrase() {
     isConnected,
     syncStatus,
     selectedLocales,
+    activeLocales,
 
     // Token management
     saveToken,
     clearToken,
 
-    // Locale selection
+    // Locale selection (legacy per-project)
     getSelectedLocales,
     setSelectedLocales,
+
+    // Global active locales
+    setActiveLocales,
 
     // Data fetching
     fetchProjects,
