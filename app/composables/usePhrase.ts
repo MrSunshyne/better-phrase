@@ -68,6 +68,14 @@ export interface FetchKeysOptions {
 const STORAGE_KEY = 'phrase_api_token'
 const SELECTED_LOCALES_KEY = 'phrase_selected_locales'
 const ACTIVE_LOCALES_KEY = 'phrase_active_locales'
+const MAX_PER_PAGE = 100
+
+// Read the page count from the Link header's rel=last URL (Link is CORS-exposed, Pagination is not)
+function lastPageFromLink(link: string | null): number | undefined {
+  const last = link?.split(',').find(part => /rel="?last"?/.test(part))
+  const page = last?.match(/[?&]page=(\d+)/)?.[1]
+  return page === undefined ? undefined : Number(page)
+}
 
 export function usePhrase() {
   const cache = useCache()
@@ -150,6 +158,18 @@ export function usePhrase() {
     })
 
     return response
+  }
+
+  // Fetch every page of a list endpoint. Phrase returns 25 items per page by default,
+  // and the browser can't read its Pagination header (not CORS-exposed), so stop on a short page.
+  async function apiRequestAll<T>(endpoint: string): Promise<T[]> {
+    const separator = endpoint.includes('?') ? '&' : '?'
+    const items: T[] = []
+    for (let page = 1; ; page++) {
+      const batch = await apiRequest<T[]>(`${endpoint}${separator}page=${page}&per_page=${MAX_PER_PAGE}`)
+      items.push(...batch)
+      if (batch.length < MAX_PER_PAGE) return items
+    }
   }
 
   // Token management
@@ -324,7 +344,7 @@ export function usePhrase() {
       }
 
       // Fetch from API
-      const response = await apiRequest<PhraseLocale[]>(`/projects/${projectId}/locales`)
+      const response = await apiRequestAll<PhraseLocale>(`/projects/${projectId}/locales`)
       locales.value = response
 
       // Initialize active locales with defaults if not set
@@ -350,7 +370,7 @@ export function usePhrase() {
     projectId: string,
     options: FetchKeysOptions = {},
     forceRefresh = false
-  ): Promise<{ keys: PhraseKey[], hasMore: boolean, total?: number }> {
+  ): Promise<{ keys: PhraseKey[], hasMore: boolean, totalPages?: number }> {
     if (!token.value) return { keys: [], hasMore: false }
 
     const {
@@ -380,8 +400,8 @@ export function usePhrase() {
         }
       }
 
-      // Fetch from API with headers to get total count
-      let total: number | undefined
+      // Fetch from API with headers to get the page count
+      let totalPages: number | undefined
       const response = await $fetch<PhraseKey[]>(
         `https://api.phrase.com/v2/projects/${projectId}/keys?${params.toString()}`,
         {
@@ -390,16 +410,7 @@ export function usePhrase() {
             'Content-Type': 'application/json'
           },
           onResponse({ response: res }) {
-            // Phrase API returns pagination info in headers
-            const pagination = res.headers.get('Pagination')
-            if (pagination) {
-              try {
-                const paginationData = JSON.parse(pagination)
-                total = paginationData.total_count
-              } catch {
-                // Ignore parsing errors
-              }
-            }
+            totalPages = lastPageFromLink(res.headers.get('Link'))
           }
         }
       )
@@ -415,8 +426,8 @@ export function usePhrase() {
 
       return {
         keys: response,
-        hasMore: response.length === perPage,
-        total
+        hasMore: totalPages === undefined ? response.length === perPage : page < totalPages,
+        totalPages
       }
     } catch (err: unknown) {
       console.error('Failed to fetch keys:', err)
@@ -440,7 +451,7 @@ export function usePhrase() {
       }
 
       // Fetch from API
-      const response = await apiRequest<PhraseTranslation[]>(
+      const response = await apiRequestAll<PhraseTranslation>(
         `/projects/${projectId}/translations?key_id=${keyId}`
       )
 
@@ -474,7 +485,7 @@ export function usePhrase() {
       // Process batches sequentially to avoid rate limiting
       for (const batch of batches) {
         const promises = batch.map(keyId =>
-          apiRequest<PhraseTranslation[]>(
+          apiRequestAll<PhraseTranslation>(
             `/projects/${projectId}/translations?key_id=${keyId}`
           ).then(trans => ({ keyId, translations: trans }))
         )
@@ -654,6 +665,16 @@ export function usePhrase() {
   // Bulk Operations (Phase 2)
   // ============================================
 
+  // Find a key by its exact name. `name:` is an exact-match query, but it can't express
+  // whitespace, so names with spaces fall back to a broad search over every page.
+  async function findKeyByName(projectId: string, keyName: string): Promise<PhraseKey | undefined> {
+    const q = /\s/.test(keyName) ? keyName : `name:${keyName}`
+    const response = await apiRequestAll<PhraseKey>(
+      `/projects/${projectId}/keys?q=${encodeURIComponent(q)}`
+    )
+    return response.find(k => k.name === keyName)
+  }
+
   interface ExistingKeyInfo {
     id: string
     name: string
@@ -677,15 +698,10 @@ export function usePhrase() {
         const batch = keyNames.slice(i, i + batchSize)
         const promises = batch.map(async (keyName) => {
           try {
-            // Search for the exact key name
-            const response = await apiRequest<PhraseKey[]>(
-              `/projects/${projectId}/keys?q=${encodeURIComponent(keyName)}&per_page=100`
-            )
-            // Find exact match
-            const exactMatch = response.find(k => k.name === keyName)
+            const exactMatch = await findKeyByName(projectId, keyName)
             if (exactMatch) {
               // Fetch translations for this key
-              const translations = await apiRequest<PhraseTranslation[]>(
+              const translations = await apiRequestAll<PhraseTranslation>(
                 `/projects/${projectId}/translations?key_id=${exactMatch.id}`
               )
               const translationsMap: Record<string, string> = {}
@@ -835,10 +851,7 @@ export function usePhrase() {
       for (const update of updates) {
         try {
           // Find the key
-          const response = await apiRequest<PhraseKey[]>(
-            `/projects/${projectId}/keys?q=${encodeURIComponent(update.keyName)}&per_page=100`
-          )
-          const key = response.find(k => k.name === update.keyName)
+          const key = await findKeyByName(projectId, update.keyName)
 
           if (!key) {
             console.warn(`Key not found: ${update.keyName}`)
@@ -848,7 +861,7 @@ export function usePhrase() {
           }
 
           // Get existing translations for this key
-          const existingTranslations = await apiRequest<PhraseTranslation[]>(
+          const existingTranslations = await apiRequestAll<PhraseTranslation>(
             `/projects/${projectId}/translations?key_id=${key.id}`
           )
 

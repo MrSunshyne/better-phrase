@@ -54,6 +54,8 @@ class PhraseDatabase extends Dexie {
       translations: 'id, projectId, keyId, localeCode, lastSynced, dirty',
       syncMeta: 'key'
     })
+    // Locales used to be cached from the first page only (25 items); drop them so all pages are refetched
+    this.version(2).stores({}).upgrade(tx => tx.table('locales').clear())
   }
 }
 

@@ -27,7 +27,7 @@ const debouncedSearch = ref('')
 const currentPage = ref(1)
 const perPage = 100
 const hasMore = ref(false)
-const totalKeys = ref<number | undefined>(undefined)
+const totalPages = ref<number | undefined>(undefined)
 const isLoadingKeys = ref(false)
 const isLoadingTranslations = ref(false)
 
@@ -101,7 +101,7 @@ async function loadKeys(reset = false) {
     })
 
     hasMore.value = result.hasMore
-    totalKeys.value = result.total
+    totalPages.value = result.totalPages
 
     // Load translations for the fetched keys
     if (result.keys.length > 0) {
@@ -531,11 +531,8 @@ defineExpose({
       class="flex items-center justify-between"
     >
       <p class="text-sm text-muted">
-        <template v-if="totalKeys !== undefined">
-          Showing {{ keys.length }} of {{ totalKeys }} key{{ totalKeys === 1 ? '' : 's' }} matching "{{ debouncedSearch }}"
-        </template>
-        <template v-else>
-          Found {{ keys.length }} key{{ keys.length === 1 ? '' : 's' }} matching "{{ debouncedSearch }}"
+        Found {{ keys.length }} key{{ keys.length === 1 ? '' : 's' }} matching "{{ debouncedSearch }}"<template v-if="totalPages !== undefined && totalPages > 1">
+          on this page
         </template>
       </p>
 
@@ -551,7 +548,7 @@ defineExpose({
           Previous
         </UButton>
         <span class="text-sm text-muted px-2">
-          Page {{ currentPage }}<template v-if="totalKeys !== undefined"> of {{ Math.ceil(totalKeys / perPage) }}</template>
+          Page {{ currentPage }}<template v-if="totalPages !== undefined"> of {{ totalPages }}</template>
         </span>
         <UButton
           color="neutral"
