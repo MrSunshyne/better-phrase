@@ -27,6 +27,7 @@ const parseError = ref<string | null>(null)
 
 // LocalStorage key for persisting editor content
 const storageKey = computed(() => `better-phrase-editor-${projectId.value}`)
+const requireAllStorageKey = computed(() => `better-phrase-require-all-${projectId.value}`)
 
 // Parsed data
 interface ParsedKey {
@@ -45,6 +46,7 @@ const showPreview = ref(false)
 // Options
 const skipExisting = ref(false)
 const skipUnchanged = ref(false)
+const requireAllLocales = ref(false)
 const activeTab = ref<'editor' | 'preview'>('editor')
 
 // Import errors
@@ -86,6 +88,29 @@ const keysToImport = computed(() => {
   return keys
 })
 
+// Pasted locales that don't exist in the project: their translations can't be imported
+const unknownLocales = computed(() =>
+  detectedLocales.value.filter(code => !locales.value.some(l => l.code === code))
+)
+
+// Project locales a key will still lack after import, counting translations already in Phrase
+function missingLocales(key: ParsedKey): string[] {
+  return locales.value
+    .filter(l => !key.translations[l.code] && !key.existingTranslations?.[l.code])
+    .map(l => l.code)
+    .sort()
+}
+
+const keysMissingLocales = computed(() =>
+  keysToImport.value.filter(k => missingLocales(k).length > 0).length
+)
+
+const importBlocked = computed(() =>
+  keysToImport.value.length === 0
+  || unknownLocales.value.length > 0
+  || (requireAllLocales.value && keysMissingLocales.value > 0)
+)
+
 // Load project data only if not already loaded
 onMounted(async () => {
   const promises: Promise<unknown>[] = []
@@ -101,6 +126,8 @@ onMounted(async () => {
   if (promises.length > 0) {
     await Promise.all(promises)
   }
+
+  requireAllLocales.value = localStorage.getItem(requireAllStorageKey.value) === 'true'
 
   // Restore editor content from localStorage
   const saved = localStorage.getItem(storageKey.value)
@@ -122,6 +149,10 @@ watch(jsonInput, (newValue) => {
     localStorage.setItem(storageKey.value, JSON.stringify(newValue))
   }
 }, { deep: true })
+
+watch(requireAllLocales, (value) => {
+  localStorage.setItem(requireAllStorageKey.value, String(value))
+})
 
 // Parse JSON object in format: { "key.name": { "en": "value", "fr": "value" } }
 function parseJsonData(data: Record<string, Record<string, string>>): { keys: ParsedKey[], locales: string[] } | null {
@@ -217,6 +248,7 @@ async function handleVerify() {
 
 // Import the keys
 async function handleImport() {
+  if (importBlocked.value) return
   if (keysToImport.value.length === 0) {
     toast.add({
       title: 'Nothing to import',
@@ -561,11 +593,16 @@ function mergeDiffParts(parts: DiffPart[]): DiffPart[] {
             label="Skip unchanged"
             size="xs"
           />
+          <UCheckbox
+            v-model="requireAllLocales"
+            label="Require every language"
+            size="xs"
+          />
           <UButton
             icon="i-lucide-upload"
             size="xs"
             :loading="isImporting"
-            :disabled="keysToImport.length === 0"
+            :disabled="importBlocked"
             @click="handleImport"
           >
             Import {{ keysToImport.length }}
@@ -630,6 +667,28 @@ function mergeDiffParts(parts: DiffPart[]): DiffPart[] {
           </template>
         </UAlert>
 
+        <!-- Unknown Locales -->
+        <UAlert
+          v-if="unknownLocales.length > 0"
+          color="error"
+          icon="i-lucide-alert-circle"
+          title="Unknown languages"
+          :description="`${unknownLocales.join(', ')} ${unknownLocales.length === 1 ? 'is' : 'are'} not in this project. Rename or remove ${unknownLocales.length === 1 ? 'it' : 'them'} before importing.`"
+          class="shrink-0 mb-3"
+        />
+
+        <!-- Missing Locales -->
+        <UAlert
+          v-if="keysMissingLocales > 0"
+          :color="requireAllLocales ? 'error' : 'warning'"
+          icon="i-lucide-languages"
+          :title="`${keysMissingLocales} key${keysMissingLocales === 1 ? '' : 's'} missing languages`"
+          :description="requireAllLocales
+            ? 'Every language is required for this project. Add the missing translations to import.'
+            : 'These keys will be imported without a translation in some of the project\'s languages.'"
+          class="shrink-0 mb-3"
+        />
+
         <!-- Stats Bar -->
         <div class="shrink-0 mb-3 flex items-center gap-4 text-sm text-muted px-1">
           <span><span class="font-medium text-highlighted">{{ stats.total }}</span> keys</span>
@@ -685,8 +744,16 @@ function mergeDiffParts(parts: DiffPart[]): DiffPart[] {
                     {{ key.status }}
                   </UBadge>
                 </td>
-                <td class="px-4 py-3 font-mono text-sm">
-                  {{ key.name }}
+                <td class="px-4 py-3">
+                  <div class="font-mono text-sm">
+                    {{ key.name }}
+                  </div>
+                  <div
+                    v-if="missingLocales(key).length > 0"
+                    class="text-xs text-warning mt-1"
+                  >
+                    Missing {{ missingLocales(key).length }}/{{ locales.length }}: {{ missingLocales(key).map(getLocaleName).join(', ') }}
+                  </div>
                 </td>
                 <td
                   v-for="locale in detectedLocales"
