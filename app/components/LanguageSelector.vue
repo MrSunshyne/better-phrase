@@ -46,6 +46,14 @@ function toggleLocale(code: string) {
   }
 }
 
+function selectAll() {
+  selectedCodes.value = locales.value.map(l => l.code)
+}
+
+function clearSelection() {
+  selectedCodes.value = []
+}
+
 function isSelected(code: string) {
   return selectedCodes.value.includes(code)
 }
@@ -92,9 +100,29 @@ function isSelected(code: string) {
         v-else
         class="space-y-3"
       >
-        <p class="text-sm text-muted mb-4">
-          Selected languages will be displayed in the translation editor.
-        </p>
+        <div class="flex items-center justify-between gap-2 mb-4">
+          <p class="text-sm text-muted">
+            Selected languages will be displayed in the translation editor.
+          </p>
+          <div class="flex gap-1 shrink-0">
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              label="Select all"
+              :disabled="selectedCodes.length === locales.length"
+              @click="selectAll"
+            />
+            <UButton
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              label="Clear"
+              :disabled="selectedCodes.length === 0"
+              @click="clearSelection"
+            />
+          </div>
+        </div>
 
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-80 overflow-y-auto">
           <button
