@@ -13,6 +13,7 @@ const isDarkMode = computed(() => colorMode.value === 'dark')
 const {
   currentProject,
   locales,
+  findLocale,
   fetchProject,
   fetchLocales,
   checkKeysExist,
@@ -142,7 +143,11 @@ function parseJsonData(data: Record<string, Record<string, string>>): { keys: Pa
         throw new Error(`Invalid value for key "${keyName}". Expected an object with locale translations.`)
       }
 
-      const trans = translations as Record<string, string>
+      // Accept locale names as well as codes, and work with codes from here on
+      const trans: Record<string, string> = {}
+      for (const [locale, value] of Object.entries(translations as Record<string, string>)) {
+        trans[findLocale(locale)?.code ?? locale] = value
+      }
       keys.push({
         name: keyName,
         translations: trans,
@@ -509,7 +514,7 @@ function mergeDiffParts(parts: DiffPart[]): DiffPart[] {
           <template #content>
             <div class="p-3 text-xs max-w-xs">
               <p class="font-medium text-highlighted mb-2">
-                Expected format:
+                Expected format (locale codes or names):
               </p>
               <pre class="text-muted bg-elevated/50 p-2 rounded overflow-x-auto">{
   "key.name": {
@@ -639,7 +644,7 @@ function mergeDiffParts(parts: DiffPart[]): DiffPart[] {
             class="text-muted"
           >(<span class="font-medium">{{ stats.unchangedKeys }}</span> unchanged)</span>
           <span class="text-muted/50">·</span>
-          <span>{{ detectedLocales.join(', ') }}</span>
+          <span>{{ detectedLocales.map(getLocaleName).join(', ') }}</span>
         </div>
 
         <!-- Preview Table -->

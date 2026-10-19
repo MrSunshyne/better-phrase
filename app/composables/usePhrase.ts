@@ -231,6 +231,12 @@ export function usePhrase() {
     }
   }
 
+  // Resolve a locale by code, falling back to name (a locale can be named "zh-CN" with code "zh-Hans")
+  function findLocale(identifier: string): PhraseLocale | undefined {
+    return locales.value.find(l => l.code === identifier)
+      ?? locales.value.find(l => l.name === identifier)
+  }
+
   // Fetch projects (with cache)
   async function fetchProjects(forceRefresh = false): Promise<boolean> {
     if (!token.value) {
@@ -945,6 +951,7 @@ export function usePhrase() {
 
     // Global active locales
     setActiveLocales,
+    findLocale,
 
     // Data fetching
     fetchProjects,
