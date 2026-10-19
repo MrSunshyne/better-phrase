@@ -73,6 +73,9 @@ const MAX_PER_PAGE = 100
 // Phrase's rate limit resets every 5 minutes and the browser can't read its reset header,
 // so back off on a fixed schedule that spans a full window before giving up
 const RATE_LIMIT_RETRY_DELAYS = [5, 15, 30, 60, 60, 60, 90].map(seconds => seconds * 1000)
+const UPLOAD_DONE_STATES = ['success', 'error']
+const UPLOAD_POLL_INTERVAL = 1500
+const UPLOAD_TIMEOUT = 5 * 60 * 1000
 
 // Read the page count from the Link header's rel=last URL (Link is CORS-exposed, Pagination is not)
 function lastPageFromLink(link: string | null): number | undefined {
@@ -158,8 +161,9 @@ export function usePhrase() {
         return await $fetch<T>(`https://api.phrase.com/v2${endpoint}`, {
           ...options,
           headers: {
-            'Authorization': `token ${token.value}`,
-            'Content-Type': 'application/json',
+            Authorization: `token ${token.value}`,
+            // Let the browser set the multipart boundary for file uploads
+            ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
             ...options.headers
           }
         })
@@ -757,186 +761,140 @@ export function usePhrase() {
     }
   }
 
-  interface BulkCreateKeyData {
+  interface ImportKeyData {
     name: string
     translations: Record<string, string>
   }
 
-  // Bulk create keys with translations
-  async function bulkCreateKeys(
+  interface PhraseUpload {
+    id: string
+    state: string
+    error_message: string | null
+    summary: {
+      translation_keys_created: number
+      translations_created: number
+      translations_updated: number
+    }
+  }
+
+  // Upload one locale's translations as a flat JSON file
+  async function uploadLocaleFile(
     projectId: string,
-    keysData: BulkCreateKeyData[]
-  ): Promise<{ created: number, errors: number, errorDetails: string[] }> {
-    if (!token.value || keysData.length === 0) {
-      return { created: 0, errors: 0, errorDetails: [] }
+    locale: PhraseLocale,
+    translations: Record<string, string>
+  ): Promise<PhraseUpload> {
+    const form = new FormData()
+    form.append('file', new Blob([JSON.stringify(translations)], { type: 'application/json' }), `${locale.code}.json`)
+    form.append('file_format', 'simple_json')
+    form.append('locale_id', locale.id)
+    form.append('update_translations', 'true')
+    form.append('skip_upload_tags', 'true')
+
+    return apiRequest<PhraseUpload>(`/projects/${projectId}/uploads`, {
+      method: 'POST',
+      body: form
+    })
+  }
+
+  // Poll the project's recent uploads (one request per round) until the given uploads finish
+  async function waitForUploads(projectId: string, uploads: PhraseUpload[]): Promise<Map<string, PhraseUpload>> {
+    const finished = new Map<string, PhraseUpload>()
+    for (const upload of uploads) {
+      if (UPLOAD_DONE_STATES.includes(upload.state)) finished.set(upload.id, upload)
     }
 
-    let created = 0
-    let errors = 0
-    const errorDetails: string[] = []
-
-    syncStatus.value.isSyncing = true
-
-    try {
-      // Get locale IDs for translation creation
-      const projectLocales = locales.value.length > 0
-        ? locales.value
-        : await fetchLocales(projectId)
-
-      const localeIdMap: Record<string, string> = {}
-      for (const locale of projectLocales) {
-        localeIdMap[locale.code] = locale.id
-      }
-
-      for (const keyData of keysData) {
-        try {
-          // Create the key
-          const key = await apiRequest<PhraseKey>(
-            `/projects/${projectId}/keys`,
-            {
-              method: 'POST',
-              body: JSON.stringify({ name: keyData.name })
-            }
-          )
-
-          // Create translations for each locale
-          for (const [localeCode, content] of Object.entries(keyData.translations)) {
-            const localeId = localeIdMap[localeCode]
-            if (localeId && content) {
-              try {
-                await apiRequest(
-                  `/projects/${projectId}/translations`,
-                  {
-                    method: 'POST',
-                    body: JSON.stringify({
-                      locale_id: localeId,
-                      key_id: key.id,
-                      content
-                    })
-                  }
-                )
-              } catch {
-                // Continue with other translations
-              }
-            }
-          }
-
-          created++
-        } catch (err) {
-          console.error(`Failed to create key ${keyData.name}:`, err)
-          const errorMsg = err instanceof Error ? err.message : String(err)
-          errorDetails.push(`${keyData.name}: ${errorMsg}`)
-          errors++
+    const deadline = Date.now() + UPLOAD_TIMEOUT
+    while (finished.size < uploads.length && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, UPLOAD_POLL_INTERVAL))
+      const recent = await apiRequest<PhraseUpload[]>(`/projects/${projectId}/uploads?per_page=${MAX_PER_PAGE}`)
+      for (const upload of recent) {
+        if (UPLOAD_DONE_STATES.includes(upload.state) && uploads.some(u => u.id === upload.id)) {
+          finished.set(upload.id, upload)
         }
       }
-
-      // Refresh the keys list
-      await fetchKeys(projectId, { page: 1, perPage: 20 }, true)
-
-      return { created, errors, errorDetails }
-    } finally {
-      syncStatus.value.isSyncing = false
     }
+
+    return finished
   }
 
-  interface BulkUpdateData {
-    keyName: string
-    translations: Record<string, string>
-  }
-
-  // Bulk update translations for existing keys
-  async function bulkUpdateTranslations(
+  // Create or update keys with one file upload per locale instead of one request per translation,
+  // which keeps large imports well under Phrase's rate limit
+  async function importTranslations(
     projectId: string,
-    updates: BulkUpdateData[]
-  ): Promise<{ updated: number, errors: number, errorDetails: string[] }> {
-    if (!token.value || updates.length === 0) {
-      return { updated: 0, errors: 0, errorDetails: [] }
-    }
-
-    let updated = 0
-    let errors = 0
-    const errorDetails: string[] = []
+    keysData: ImportKeyData[]
+  ): Promise<{ keysCreated: number, translationsCreated: number, translationsUpdated: number, errorDetails: string[] }> {
+    const result = { keysCreated: 0, translationsCreated: 0, translationsUpdated: 0, errorDetails: [] as string[] }
+    if (!token.value || keysData.length === 0) return result
 
     syncStatus.value.isSyncing = true
 
     try {
-      // Get locale IDs for translation creation
       const projectLocales = locales.value.length > 0
         ? locales.value
         : await fetchLocales(projectId)
 
-      const localeIdMap: Record<string, string> = {}
-      for (const locale of projectLocales) {
-        localeIdMap[locale.code] = locale.id
-      }
-
-      for (const update of updates) {
-        try {
-          // Find the key
-          const key = await findKeyByName(projectId, update.keyName)
-
-          if (!key) {
-            console.warn(`Key not found: ${update.keyName}`)
-            errorDetails.push(`${update.keyName}: Key not found`)
-            errors++
+      // Group translations into one file per locale
+      const files = new Map<string, Record<string, string>>()
+      for (const keyData of keysData) {
+        for (const [localeCode, content] of Object.entries(keyData.translations)) {
+          if (!content) continue
+          if (!projectLocales.some(l => l.code === localeCode)) {
+            result.errorDetails.push(`${keyData.name} (${localeCode}): locale not in this project`)
             continue
           }
+          files.set(localeCode, { ...files.get(localeCode), [keyData.name]: content })
+        }
+      }
 
-          // Get existing translations for this key
-          const existingTranslations = await apiRequestAll<PhraseTranslation>(
-            `/projects/${projectId}/translations?key_id=${key.id}`
-          )
+      // Default locale first, then the locales covering the most keys
+      const uploadLocales = projectLocales
+        .filter(l => files.has(l.code))
+        .sort((a, b) => Number(b.default) - Number(a.default)
+          || Object.keys(files.get(b.code)!).length - Object.keys(files.get(a.code)!).length)
 
-          // Update or create translations
-          for (const [localeCode, content] of Object.entries(update.translations)) {
-            const localeId = localeIdMap[localeCode]
-            if (!localeId) continue
+      // An upload creates the keys it mentions. Wait for uploads one by one until every key
+      // exists, so concurrent uploads never race to create the same key; then send the rest at once.
+      const uncreatedKeys = new Set(keysData.map(k => k.name))
+      const uploads: { locale: PhraseLocale, upload: PhraseUpload }[] = []
 
-            const existing = existingTranslations.find(t => t.locale.code === localeCode)
+      for (const locale of uploadLocales) {
+        const translations = files.get(locale.code)!
+        try {
+          const upload = await uploadLocaleFile(projectId, locale, translations)
+          uploads.push({ locale, upload })
 
-            try {
-              if (existing) {
-                // Update existing translation
-                await apiRequest(
-                  `/projects/${projectId}/translations/${existing.id}`,
-                  {
-                    method: 'PATCH',
-                    body: JSON.stringify({ content })
-                  }
-                )
-              } else {
-                // Create new translation
-                await apiRequest(
-                  `/projects/${projectId}/translations`,
-                  {
-                    method: 'POST',
-                    body: JSON.stringify({
-                      locale_id: localeId,
-                      key_id: key.id,
-                      content
-                    })
-                  }
-                )
-              }
-            } catch (localeErr) {
-              const errorMsg = localeErr instanceof Error ? localeErr.message : String(localeErr)
-              errorDetails.push(`${update.keyName} (${localeCode}): ${errorMsg}`)
+          const createsKeys = Object.keys(translations).some(name => uncreatedKeys.has(name))
+          if (createsKeys) {
+            const finished = await waitForUploads(projectId, [upload])
+            if (finished.get(upload.id)?.state === 'success') {
+              Object.keys(translations).forEach(name => uncreatedKeys.delete(name))
             }
           }
-
-          updated++
         } catch (err) {
-          console.error(`Failed to update key ${update.keyName}:`, err)
           const errorMsg = err instanceof Error ? err.message : String(err)
-          errorDetails.push(`${update.keyName}: ${errorMsg}`)
-          errors++
+          result.errorDetails.push(`${locale.name}: upload failed: ${errorMsg}`)
+        }
+      }
+
+      const finished = await waitForUploads(projectId, uploads.map(u => u.upload))
+
+      for (const { locale, upload } of uploads) {
+        const done = finished.get(upload.id)
+        if (!done) {
+          result.errorDetails.push(`${locale.name}: upload still processing in Phrase, check the project's uploads`)
+        } else if (done.state !== 'success') {
+          result.errorDetails.push(`${locale.name}: ${done.error_message || 'upload failed'}`)
+        } else {
+          result.keysCreated += done.summary.translation_keys_created
+          result.translationsCreated += done.summary.translations_created
+          result.translationsUpdated += done.summary.translations_updated
         }
       }
 
       // Refresh the keys list
       await fetchKeys(projectId, { page: 1, perPage: 20 }, true)
 
-      return { updated, errors, errorDetails }
+      return result
     } finally {
       syncStatus.value.isSyncing = false
     }
@@ -983,8 +941,7 @@ export function usePhrase() {
 
     // Bulk operations
     checkKeysExist,
-    bulkCreateKeys,
-    bulkUpdateTranslations,
+    importTranslations,
 
     // Sync
     syncAll,

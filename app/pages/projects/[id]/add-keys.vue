@@ -17,8 +17,7 @@ const {
   fetchProject,
   fetchLocales,
   checkKeysExist,
-  bulkCreateKeys,
-  bulkUpdateTranslations
+  importTranslations
 } = usePhrase()
 
 // JSON input - using object for json-editor-vue
@@ -265,42 +264,18 @@ async function handleImport() {
   importErrors.value = []
 
   try {
-    const newKeys = keysToImport.value.filter(k => k.status === 'new')
-    const updateKeys = keysToImport.value.filter(k => k.status === 'update')
-
-    let createdCount = 0
-    let updatedCount = 0
-    let errorCount = 0
-    const allErrorDetails: string[] = []
-
-    // Create new keys
-    if (newKeys.length > 0) {
-      const result = await bulkCreateKeys(projectId.value, newKeys.map(k => ({
-        name: k.name,
-        translations: k.translations
-      })))
-      createdCount = result.created
-      errorCount += result.errors
-      allErrorDetails.push(...result.errorDetails)
-    }
-
-    // Update existing keys
-    if (updateKeys.length > 0) {
-      const result = await bulkUpdateTranslations(projectId.value, updateKeys.map(k => ({
-        keyName: k.name,
-        translations: k.translations
-      })))
-      updatedCount = result.updated
-      errorCount += result.errors
-      allErrorDetails.push(...result.errorDetails)
-    }
+    const result = await importTranslations(projectId.value, keysToImport.value.map(k => ({
+      name: k.name,
+      translations: k.translations
+    })))
+    const summary = `Keys created: ${result.keysCreated}, translations created: ${result.translationsCreated}, updated: ${result.translationsUpdated}`
 
     // Show result
-    if (errorCount > 0 || allErrorDetails.length > 0) {
-      importErrors.value = allErrorDetails
+    if (result.errorDetails.length > 0) {
+      importErrors.value = result.errorDetails
       toast.add({
         title: 'Import completed with errors',
-        description: `Created: ${createdCount}, Updated: ${updatedCount}, Errors: ${allErrorDetails.length}`,
+        description: `${summary}. Errors: ${result.errorDetails.length}`,
         color: 'warning',
         icon: 'i-lucide-alert-triangle'
       })
@@ -308,7 +283,7 @@ async function handleImport() {
     } else {
       toast.add({
         title: 'Import successful',
-        description: `Created: ${createdCount}, Updated: ${updatedCount}`,
+        description: summary,
         color: 'success',
         icon: 'i-lucide-check-circle'
       })
