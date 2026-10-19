@@ -13,6 +13,7 @@ const isDarkMode = computed(() => colorMode.value === 'dark')
 const {
   currentProject,
   locales,
+  activeLocales,
   findLocale,
   fetchProject,
   fetchLocales,
@@ -309,6 +310,72 @@ async function handleImport() {
   }
 }
 
+// Languages for the AI prompt: the selected ones (or all), source language first
+const promptLocales = computed(() => {
+  const selected = locales.value.filter(l => activeLocales.value.includes(l.code))
+  return [...(selected.length > 0 ? selected : locales.value)]
+    .sort((a, b) => Number(b.default) - Number(a.default) || a.code.localeCompare(b.code))
+})
+
+// Full language name for a locale code (e.g. "pt-BR" → "Brazilian Portuguese"), falling back to Phrase's name
+function languageName(code: string, fallback: string): string {
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'language' }).of(code) || fallback
+  } catch {
+    return fallback
+  }
+}
+
+function buildTranslationPrompt(): string {
+  const [source] = promptLocales.value
+  const languageLines = promptLocales.value
+    .map(l => `- ${l.code}: ${languageName(l.code, l.name)}${l === source ? ' (source)' : ''}`)
+    .join('\n')
+  const example = Object.fromEntries(promptLocales.value.slice(0, 2).map(l => [l.code, `${languageName(l.code, l.name)} value`]))
+  const hasKeys = jsonInput.value && Object.keys(jsonInput.value).length > 0
+  const keys = hasKeys
+    ? JSON.stringify(jsonInput.value, null, 2)
+    : '<paste your keys here, with at least the source text>'
+
+  return `You are translating user interface strings for a software product.
+
+Return a single JSON object in exactly this format, with no text before or after it:
+
+${JSON.stringify({ 'key.name': { ...example, '...': '...' } }, null, 2)}
+
+Include every one of these ${promptLocales.value.length} locale codes for every key, in this order:
+${languageLines}
+
+Rules:
+- Translate from the source language${source ? ` (${languageName(source.code, source.name)}, "${source.code}")` : ''}. If a key has no source value, translate from the value it has.
+- Keep every key name exactly as given. Don't add, remove or rename keys.
+- Keep placeholders, variables and markup unchanged and untranslated, for example {{name}}, %{count}, {0}, <strong>, <1></1>.
+- This is interface text: stay as concise as the source and keep its meaning and tone.
+- Keep the source's capitalization style (sentence case stays sentence case).
+- Where a language distinguishes formal and informal "you", use the formal form.
+- Use each language's own punctuation and quotation marks.
+- Values must be plain strings: no nested objects and no plural variants.
+
+Keys to translate:
+${keys}`
+}
+
+const promptHint = computed(() => {
+  const hasKeys = jsonInput.value && Object.keys(jsonInput.value).length > 0
+  const count = promptLocales.value.length
+  return `Asks an AI assistant for this format in ${count} language${count === 1 ? '' : 's'}${hasKeys ? ', including the keys in the editor' : ''}.`
+})
+
+async function copyTranslationPrompt() {
+  await navigator.clipboard.writeText(buildTranslationPrompt())
+  toast.add({
+    title: 'Prompt copied',
+    description: `Paste it into your AI assistant to get translations for ${promptLocales.value.length} languages`,
+    color: 'success',
+    icon: 'i-lucide-clipboard-check'
+  })
+}
+
 // Go back
 function goBack() {
   router.push(`/projects/${projectId.value}`)
@@ -531,6 +598,19 @@ function mergeDiffParts(parts: DiffPart[]): DiffPart[] {
     "fr": "French value"
   }
 }</pre>
+              <UButton
+                icon="i-lucide-sparkles"
+                size="xs"
+                block
+                class="mt-3"
+                :disabled="promptLocales.length === 0"
+                @click="copyTranslationPrompt"
+              >
+                Copy AI prompt
+              </UButton>
+              <p class="text-muted mt-1.5">
+                {{ promptHint }}
+              </p>
             </div>
           </template>
         </UPopover>
