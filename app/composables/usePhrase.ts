@@ -55,6 +55,7 @@ export interface SyncStatus {
   lastSynced: number | null
   pendingChanges: number
   isSyncing: boolean
+  rateLimited: boolean
 }
 
 export interface FetchKeysOptions {
@@ -69,6 +70,9 @@ const STORAGE_KEY = 'phrase_api_token'
 const SELECTED_LOCALES_KEY = 'phrase_selected_locales'
 const ACTIVE_LOCALES_KEY = 'phrase_active_locales'
 const MAX_PER_PAGE = 100
+// Phrase's rate limit resets every 5 minutes and the browser can't read its reset header,
+// so back off on a fixed schedule that spans a full window before giving up
+const RATE_LIMIT_RETRY_DELAYS = [5, 15, 30, 60, 60, 60, 90].map(seconds => seconds * 1000)
 
 // Read the page count from the Link header's rel=last URL (Link is CORS-exposed, Pagination is not)
 function lastPageFromLink(link: string | null): number | undefined {
@@ -97,7 +101,8 @@ export function usePhrase() {
   const syncStatus = useState<SyncStatus>('phrase_sync_status', () => ({
     lastSynced: null,
     pendingChanges: 0,
-    isSyncing: false
+    isSyncing: false,
+    rateLimited: false
   }))
 
   // Selected locales per project (persisted) - legacy, kept for backwards compatibility
@@ -148,16 +153,26 @@ export function usePhrase() {
       throw new Error('No API token')
     }
 
-    const response = await $fetch<T>(`https://api.phrase.com/v2${endpoint}`, {
-      ...options,
-      headers: {
-        'Authorization': `token ${token.value}`,
-        'Content-Type': 'application/json',
-        ...options.headers
-      }
-    })
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await $fetch<T>(`https://api.phrase.com/v2${endpoint}`, {
+          ...options,
+          headers: {
+            'Authorization': `token ${token.value}`,
+            'Content-Type': 'application/json',
+            ...options.headers
+          }
+        })
+      } catch (err: unknown) {
+        const delay = RATE_LIMIT_RETRY_DELAYS[attempt]
+        if ((err as { status?: number }).status !== 429 || delay === undefined) throw err
 
-    return response
+        console.warn(`Phrase rate limit reached, retrying in ${delay / 1000}s`)
+        syncStatus.value.rateLimited = true
+        await new Promise(resolve => setTimeout(resolve, delay))
+        syncStatus.value.rateLimited = false
+      }
+    }
   }
 
   // Fetch every page of a list endpoint. Phrase returns 25 items per page by default,
@@ -663,7 +678,8 @@ export function usePhrase() {
     syncStatus.value = {
       lastSynced: null,
       pendingChanges: 0,
-      isSyncing: false
+      isSyncing: false,
+      rateLimited: false
     }
   }
 

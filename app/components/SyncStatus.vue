@@ -6,18 +6,21 @@ const toast = useToast()
 const isOpen = ref(false)
 
 const statusIcon = computed(() => {
+  if (syncStatus.value.rateLimited) return 'i-lucide-timer'
   if (syncStatus.value.isSyncing) return 'i-lucide-loader-2'
   if (syncStatus.value.pendingChanges > 0) return 'i-lucide-cloud-upload'
   return 'i-lucide-cloud-check'
 })
 
 const statusColor = computed(() => {
+  if (syncStatus.value.rateLimited) return 'warning'
   if (syncStatus.value.isSyncing) return 'neutral'
   if (syncStatus.value.pendingChanges > 0) return 'warning'
   return 'success'
 })
 
 const statusText = computed(() => {
+  if (syncStatus.value.rateLimited) return 'Rate limited, retrying...'
   if (syncStatus.value.isSyncing) return 'Syncing...'
   if (syncStatus.value.pendingChanges > 0) {
     return `${syncStatus.value.pendingChanges} pending`
@@ -77,7 +80,7 @@ async function handleClearCache() {
       variant="ghost"
       size="sm"
       :icon="statusIcon"
-      :class="{ 'animate-spin': syncStatus.isSyncing }"
+      :class="{ 'animate-spin': syncStatus.isSyncing && !syncStatus.rateLimited }"
     >
       <span class="hidden sm:inline">{{ statusText }}</span>
       <UBadge
@@ -98,7 +101,7 @@ async function handleClearCache() {
             :name="statusIcon"
             :class="[
               'size-5',
-              syncStatus.isSyncing ? 'animate-spin text-muted' : '',
+              syncStatus.isSyncing && !syncStatus.rateLimited ? 'animate-spin text-muted' : '',
               syncStatus.pendingChanges > 0 ? 'text-warning' : 'text-success'
             ]"
           />
