@@ -57,6 +57,7 @@ const keysEditorRef = ref<{
   hasSearched: boolean
   loadKeys: (reset?: boolean) => Promise<void>
   copyAllKeys: () => Promise<void>
+  copyAllKeysAsTemplate: () => Promise<void>
   triggerSearch: () => void
 } | null>(null)
 
@@ -282,6 +283,19 @@ function setDefaultLanguages() {
             >
               Copy All ({{ keysEditorRef.keys.length }})
             </UButton>
+
+            <UTooltip text="Copy with every project language, missing translations left empty">
+              <UButton
+                v-if="keysEditorRef?.keys && keysEditorRef.keys.length > 0"
+                color="neutral"
+                variant="ghost"
+                size="xs"
+                icon="i-lucide-file-json"
+                @click="keysEditorRef?.copyAllKeysAsTemplate()"
+              >
+                Copy as template
+              </UButton>
+            </UTooltip>
           </div>
 
           <!-- Right: Selected languages -->

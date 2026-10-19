@@ -251,6 +251,23 @@ function formatKeyForCopy(key: PhraseKey): Record<string, Record<string, string>
   return { [key.name]: translationObj }
 }
 
+// Default locale first, then the rest by code
+const templateLocales = computed(() =>
+  [...props.locales].sort((a, b) => Number(b.default) - Number(a.default) || a.code.localeCompare(b.code))
+)
+
+// Every project locale: existing translations filled in, missing ones left empty to translate
+function formatKeyAsTemplate(key: PhraseKey): Record<string, Record<string, string>> {
+  const keyTranslations = translations.value.get(key.id) || []
+  const translationObj: Record<string, string> = {}
+
+  for (const locale of templateLocales.value) {
+    translationObj[locale.code] = keyTranslations.find(t => t.locale.code === locale.code)?.content || ''
+  }
+
+  return { [key.name]: translationObj }
+}
+
 async function copyKey(key: PhraseKey) {
   const data = formatKeyForCopy(key)
   await navigator.clipboard.writeText(JSON.stringify(data, null, 2))
@@ -279,6 +296,22 @@ async function copyAllKeys() {
   })
 }
 
+async function copyAllKeysAsTemplate() {
+  const data: Record<string, Record<string, string>> = {}
+
+  for (const key of keys.value) {
+    Object.assign(data, formatKeyAsTemplate(key))
+  }
+
+  await navigator.clipboard.writeText(JSON.stringify(data, null, 2))
+  toast.add({
+    title: 'Copied',
+    description: `${keys.value.length} key(s) copied as a template with all ${props.locales.length} languages`,
+    color: 'success',
+    icon: 'i-lucide-clipboard-check'
+  })
+}
+
 // Expose for parent access
 defineExpose({
   keys,
@@ -287,6 +320,7 @@ defineExpose({
   hasSearched,
   loadKeys,
   copyAllKeys,
+  copyAllKeysAsTemplate,
   triggerSearch
 })
 </script>

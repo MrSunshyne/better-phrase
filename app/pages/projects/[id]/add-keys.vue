@@ -174,9 +174,11 @@ function parseJsonData(data: Record<string, Record<string, string>>): { keys: Pa
         throw new Error(`Invalid value for key "${keyName}". Expected an object with locale translations.`)
       }
 
-      // Accept locale names as well as codes, and work with codes from here on
+      // Accept locale names as well as codes, and work with codes from here on.
+      // Empty values (e.g. from a copied template) mean "not provided" rather than "clear".
       const trans: Record<string, string> = {}
       for (const [locale, value] of Object.entries(translations as Record<string, string>)) {
+        if (value === '') continue
         trans[findLocale(locale)?.code ?? locale] = value
       }
       keys.push({
